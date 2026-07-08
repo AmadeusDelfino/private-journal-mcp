@@ -160,7 +160,7 @@ ${sections.join('\n\n')}
         return; // Skip empty entries
       }
 
-      const embedding = await this.embeddingService.generateEmbedding(text);
+      const embedding = await this.embeddingService.generateEmbedding(text, 'document');
       
       const embeddingData: EmbeddingData = {
         embedding,

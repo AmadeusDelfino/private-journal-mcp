@@ -18,6 +18,8 @@ export class EmbeddingService {
   private readonly modelName =
     process.env.PRIVATE_JOURNAL_EMBED_MODEL || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
   private readonly quantized = process.env.PRIVATE_JOURNAL_EMBED_QUANTIZED === 'true'; // default: false
+  private readonly queryPrefix = process.env.PRIVATE_JOURNAL_EMBED_QUERY_PREFIX ?? '';
+  private readonly docPrefix = process.env.PRIVATE_JOURNAL_EMBED_DOC_PREFIX ?? '';
   private initPromise: Promise<void> | null = null;
   initTimeoutMs = 30_000;
 
@@ -72,7 +74,7 @@ export class EmbeddingService {
     }
   }
 
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[]> {
     if (!this.extractor) {
       await this.initialize();
     }
@@ -81,8 +83,11 @@ export class EmbeddingService {
       throw new Error('Embedding model not initialized');
     }
 
+    const prefix = kind === 'query' ? this.queryPrefix : this.docPrefix;
+    const input = prefix ? prefix + text : text;
+
     try {
-      const result = await this.extractor(text, { pooling: 'mean', normalize: true });
+      const result = await this.extractor(input, { pooling: 'mean', normalize: true });
       return Array.from(result.data);
     } catch (error) {
       console.error('Failed to generate embedding:', error);

@@ -374,7 +374,12 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
   });
 
   describe('embedding model configuration', () => {
-    const ENV_KEYS = ['PRIVATE_JOURNAL_EMBED_MODEL', 'PRIVATE_JOURNAL_EMBED_QUANTIZED'];
+    const ENV_KEYS = [
+      'PRIVATE_JOURNAL_EMBED_MODEL',
+      'PRIVATE_JOURNAL_EMBED_QUANTIZED',
+      'PRIVATE_JOURNAL_EMBED_QUERY_PREFIX',
+      'PRIVATE_JOURNAL_EMBED_DOC_PREFIX',
+    ];
     let saved: Record<string, string | undefined>;
 
     beforeEach(() => {
@@ -408,6 +413,24 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
         'Xenova/multilingual-e5-base',
         { quantized: true }
       );
+    });
+
+    test('applies query/document prefixes from env', async () => {
+      process.env.PRIVATE_JOURNAL_EMBED_QUERY_PREFIX = 'query: ';
+      process.env.PRIVATE_JOURNAL_EMBED_DOC_PREFIX = 'passage: ';
+      EmbeddingService.resetInstance();
+
+      // Capture the text passed to the extractor
+      const calls: string[] = [];
+      (pipeline as jest.Mock).mockResolvedValueOnce(
+        jest.fn(async (text: string) => { calls.push(text); return { data: new Float32Array([0.1, 0.2, 0.3]) }; })
+      );
+
+      const svc = EmbeddingService.getInstance();
+      await svc.generateEmbedding('hello', 'query');
+      await svc.generateEmbedding('world', 'document');
+
+      expect(calls).toEqual(['query: hello', 'passage: world']);
     });
   });
 });
