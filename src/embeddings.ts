@@ -15,7 +15,9 @@ export interface EmbeddingData {
 export class EmbeddingService {
   private static instance: EmbeddingService;
   private extractor: FeatureExtractionPipeline | null = null;
-  private readonly modelName = 'Xenova/all-MiniLM-L6-v2';
+  private readonly modelName =
+    process.env.PRIVATE_JOURNAL_EMBED_MODEL || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
+  private readonly quantized = process.env.PRIVATE_JOURNAL_EMBED_QUANTIZED === 'true'; // default: false
   private initPromise: Promise<void> | null = null;
   initTimeoutMs = 30_000;
 
@@ -30,6 +32,10 @@ export class EmbeddingService {
 
   static resetInstance(): void {
     EmbeddingService.instance = undefined as unknown as EmbeddingService;
+  }
+
+  getModelName(): string {
+    return this.modelName;
   }
 
   async initialize(): Promise<void> {
@@ -53,7 +59,7 @@ export class EmbeddingService {
     try {
       console.error('Loading embedding model...');
       this.extractor = await Promise.race([
-        pipeline('feature-extraction', this.modelName),
+        pipeline('feature-extraction', this.modelName, { quantized: this.quantized }),
         timeoutPromise,
       ]);
       console.error('Embedding model loaded successfully');
