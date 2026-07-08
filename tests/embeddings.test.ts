@@ -179,6 +179,22 @@ beta insight body`;
     expect(Array.isArray(data.embedding)).toBe(true);
   });
 
+  test('regenerates embeddings whose model/version is stale', async () => {
+    await journalManager.writeThoughts({ observations: 'obs body' });
+    const userRoot = path.join(userTempDir, '.private-journal');
+    const day = (await fs.readdir(userRoot)).find(d => /^\d{4}-\d{2}-\d{2}$/.test(d))!;
+    const embPath = path.join(userRoot, day, (await fs.readdir(path.join(userRoot, day))).find(f => f.endsWith('.embedding'))!);
+
+    // Simulate an old-format file (v1: no version/model/sectionEmbeddings)
+    await fs.writeFile(embPath, JSON.stringify({ embedding: [0, 0, 0], text: 'obs body', sections: ['Observations'], timestamp: Date.now(), path: embPath.replace('.embedding', '.md') }), 'utf8');
+
+    const count = await journalManager.generateMissingEmbeddings();
+    expect(count).toBe(1);
+    const migrated = JSON.parse(await fs.readFile(embPath, 'utf8'));
+    expect(migrated.version).toBe(2);
+    expect(migrated.sectionEmbeddings.length).toBeGreaterThan(0);
+  });
+
   test('search service finds semantically similar entries', async () => {
     // Write some test entries
     await journalManager.writeThoughts({

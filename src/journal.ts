@@ -209,12 +209,20 @@ ${sections.join('\n\n')}
             const mdPath = path.join(dayPath, mdFile);
             const embeddingPath = mdPath.replace(/\.md$/, '.embedding');
             
+            let needsRegen = false;
             try {
-              await fs.access(embeddingPath);
-              // Embedding already exists, skip
+              const raw = await fs.readFile(embeddingPath, 'utf8');
+              const existing = JSON.parse(raw);
+              if (existing.version !== EMBEDDING_SCHEMA_VERSION ||
+                  existing.model !== this.embeddingService.getModelName()) {
+                needsRegen = true;
+              }
             } catch {
-              // Generate missing embedding
-              console.error(`Generating missing embedding for ${mdPath}`);
+              needsRegen = true; // missing or unreadable
+            }
+
+            if (needsRegen) {
+              console.error(`Generating/refreshing embedding for ${mdPath}`);
               const content = await fs.readFile(mdPath, 'utf8');
               const timestamp = this.extractTimestampFromPath(mdPath) || new Date();
               await this.generateEmbeddingForEntry(mdPath, content, timestamp);
