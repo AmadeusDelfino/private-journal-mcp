@@ -195,6 +195,20 @@ beta insight body`;
     expect(migrated.sectionEmbeddings.length).toBeGreaterThan(0);
   });
 
+  test('does not regenerate embeddings that are current', async () => {
+    await journalManager.writeThoughts({ observations: 'obs body' });
+    const userRoot = path.join(userTempDir, '.private-journal');
+    const day = (await fs.readdir(userRoot)).find(d => /^\d{4}-\d{2}-\d{2}$/.test(d))!;
+    const embPath = path.join(userRoot, day, (await fs.readdir(path.join(userRoot, day))).find(f => f.endsWith('.embedding'))!);
+    const before = await fs.readFile(embPath, 'utf8');
+
+    const count = await journalManager.generateMissingEmbeddings();
+
+    expect(count).toBe(0);
+    const after = await fs.readFile(embPath, 'utf8');
+    expect(after).toBe(before);
+  });
+
   test('search service finds semantically similar entries', async () => {
     // Write some test entries
     await journalManager.writeThoughts({
