@@ -5,6 +5,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
+import { pipeline } from '@xenova/transformers';
+
 import { EmbeddingService } from '../src/embeddings';
 import { SearchService } from '../src/search';
 import { JournalManager } from '../src/journal';
@@ -368,6 +370,44 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
       const embedding = await service.generateEmbedding('retry test');
       expect(Array.isArray(embedding)).toBe(true);
       expect(embedding.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('embedding model configuration', () => {
+    const ENV_KEYS = ['PRIVATE_JOURNAL_EMBED_MODEL', 'PRIVATE_JOURNAL_EMBED_QUANTIZED'];
+    let saved: Record<string, string | undefined>;
+
+    beforeEach(() => {
+      saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+      ENV_KEYS.forEach(k => delete process.env[k]);
+      (pipeline as jest.Mock).mockClear();
+      EmbeddingService.resetInstance();
+    });
+
+    afterEach(() => {
+      ENV_KEYS.forEach(k => { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]!; });
+      EmbeddingService.resetInstance();
+    });
+
+    test('defaults to the multilingual model, full precision', async () => {
+      await EmbeddingService.getInstance().generateEmbedding('hi');
+      expect(pipeline).toHaveBeenCalledWith(
+        'feature-extraction',
+        'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
+        { quantized: false }
+      );
+    });
+
+    test('honors PRIVATE_JOURNAL_EMBED_MODEL and PRIVATE_JOURNAL_EMBED_QUANTIZED', async () => {
+      process.env.PRIVATE_JOURNAL_EMBED_MODEL = 'Xenova/multilingual-e5-base';
+      process.env.PRIVATE_JOURNAL_EMBED_QUANTIZED = 'true';
+      EmbeddingService.resetInstance();
+      await EmbeddingService.getInstance().generateEmbedding('hi');
+      expect(pipeline).toHaveBeenCalledWith(
+        'feature-extraction',
+        'Xenova/multilingual-e5-base',
+        { quantized: true }
+      );
     });
   });
 });
