@@ -56,7 +56,7 @@ export class SearchService {
     } = options;
 
     // Generate query embedding
-    const queryEmbedding = await this.embeddingService.generateEmbedding(query);
+    const queryEmbedding = await this.embeddingService.generateEmbedding(query, 'query');
 
     // Collect all embeddings
     const allEmbeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
