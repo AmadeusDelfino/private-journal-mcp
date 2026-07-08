@@ -136,26 +136,35 @@ export class EmbeddingService {
     }
   }
 
-  extractSearchableText(markdownContent: string): { text: string; sections: string[] } {
-    // Remove YAML frontmatter
+  extractSearchableText(markdownContent: string): {
+    text: string;
+    sections: string[];
+    sectionChunks: { section: string; body: string }[];
+  } {
     const withoutFrontmatter = markdownContent.replace(/^---\n.*?\n---\n/s, '');
-    
-    // Extract sections
+
     const sections: string[] = [];
     const sectionMatches = withoutFrontmatter.match(/^## (.+)$/gm);
     if (sectionMatches) {
       sections.push(...sectionMatches.map(match => match.replace('## ', '')));
     }
 
-    // Clean up markdown for embedding
+    // Split into (header, body) chunks
+    const sectionChunks: { section: string; body: string }[] = [];
+    const parts = withoutFrontmatter.split(/^## (.+)$/gm); // [pre, name1, body1, name2, body2, ...]
+    for (let i = 1; i < parts.length; i += 2) {
+      const section = parts[i].trim();
+      const body = (parts[i + 1] ?? '').replace(/\n{3,}/g, '\n\n').trim();
+      if (body.length > 0) {
+        sectionChunks.push({ section, body });
+      }
+    }
+
     const cleanText = withoutFrontmatter
-      .replace(/^## .+$/gm, '') // Remove section headers
-      .replace(/\n{3,}/g, '\n\n') // Normalize whitespace
+      .replace(/^## .+$/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
 
-    return {
-      text: cleanText,
-      sections
-    };
+    return { text: cleanText, sections, sectionChunks };
   }
 }

@@ -79,6 +79,27 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
     expect(sections).toEqual(['Reflections', 'Technical Insights']);
   });
 
+  test('extractSearchableText returns per-section chunks (headers + bodies)', () => {
+    const md = `---
+title: "x"
+---
+
+## Reflections
+
+alpha reflection body
+
+## Technical Insights
+
+beta insight body`;
+    const { text, sections, sectionChunks } = EmbeddingService.getInstance().extractSearchableText(md);
+    expect(sections).toEqual(['Reflections', 'Technical Insights']);
+    expect(text).toContain('alpha reflection body');
+    expect(sectionChunks).toEqual([
+      { section: 'Reflections', body: 'alpha reflection body' },
+      { section: 'Technical Insights', body: 'beta insight body' },
+    ]);
+  });
+
   test('cosine similarity calculation works correctly', async () => {
     const embeddingService = EmbeddingService.getInstance();
     
