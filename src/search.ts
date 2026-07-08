@@ -14,6 +14,7 @@ export interface SearchResult {
   timestamp: number;
   excerpt: string;
   type: 'project' | 'user';
+  matchedSection?: string;
 }
 
 export interface RecentEntryResult {
@@ -96,7 +97,7 @@ export class SearchService {
     // Calculate similarities and sort
     const results: SearchResult[] = filtered
       .map(embedding => {
-        const score = this.embeddingService.cosineSimilarity(queryEmbedding, embedding.embedding);
+        const { score, matchedSection } = this.scoreEntry(queryEmbedding, embedding);
         const excerpt = this.generateExcerpt(embedding.text, query);
         
         return {
@@ -106,7 +107,8 @@ export class SearchService {
           sections: embedding.sections,
           timestamp: embedding.timestamp,
           excerpt,
-          type: embedding.type
+          type: embedding.type,
+          matchedSection,
         };
       })
       .filter(result => result.score >= minScore)
@@ -114,6 +116,23 @@ export class SearchService {
       .slice(0, limit);
 
     return results;
+  }
+
+  private scoreEntry(
+    queryEmbedding: number[],
+    entry: EmbeddingData
+  ): { score: number; matchedSection?: string } {
+    if (entry.sectionEmbeddings && entry.sectionEmbeddings.length > 0) {
+      let best = -Infinity;
+      let matchedSection: string | undefined;
+      for (const se of entry.sectionEmbeddings) {
+        const s = this.embeddingService.cosineSimilarity(queryEmbedding, se.embedding);
+        if (s > best) { best = s; matchedSection = se.section; }
+      }
+      return { score: best, matchedSection };
+    }
+    // Legacy fallback: whole-entry vector
+    return { score: this.embeddingService.cosineSimilarity(queryEmbedding, entry.embedding) };
   }
 
   async listRecent(options: SearchOptions = {}): Promise<SearchResult[]> {

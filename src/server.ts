@@ -214,6 +214,7 @@ export class PrivateJournalServer {
                   ? `Found ${results.length} relevant entries:\n\n${results.map((result, i) => 
                       `${i + 1}. [Score: ${result.score.toFixed(3)}] ${new Date(result.timestamp).toLocaleDateString()} (${result.type})\n` +
                       `   Sections: ${result.sections.join(', ')}\n` +
+                      (result.matchedSection ? `   Matched section: ${result.matchedSection}\n` : '') +
                       `   Path: ${result.path}\n` +
                       `   Excerpt: ${result.excerpt}\n`
                     ).join('\n')}`

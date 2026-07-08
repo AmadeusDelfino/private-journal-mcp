@@ -176,6 +176,7 @@ beta insight body`;
     expect(typeof data.model).toBe('string');
     expect(data.sectionEmbeddings.map((s: any) => s.section)).toEqual(['Reflections', 'Technical Insights']);
     expect(Array.isArray(data.sectionEmbeddings[0].embedding)).toBe(true);
+    expect(Array.isArray(data.embedding)).toBe(true);
   });
 
   test('search service finds semantically similar entries', async () => {
