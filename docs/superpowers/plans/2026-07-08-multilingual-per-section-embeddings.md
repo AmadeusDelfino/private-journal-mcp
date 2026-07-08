@@ -771,6 +771,28 @@ gh pr create --repo obra/private-journal-mcp --base main --head <your-fork>:upst
 
 ---
 
+## Validation results (Task 8 — executed 2026-07-08)
+
+**Method (adaptação conservadora):** em vez de apagar os `.embedding` do journal real, a validação rodou contra **cópias** de `~/.private_journal` (2 entradas, ambas em PT), via um driver MCP stdio (`initialize` → `tools/call search_journal`, `limit: 5, type: 'both'`, minScore default 0.1). "Antes" = v2.0.1 (`8e97230`) buildada em worktree isolado, embeddings v1 existentes (all-MiniLM-L6-v2, quantized, vetor único). "Depois" = esta branch (`9a26019`): na inicialização o scan migrou os dois arquivos v1 → v2 automaticamente (log `Generating/refreshing embedding for ...` para ambos; arquivo final: `version: 2`, `model: Xenova/paraphrase-multilingual-MiniLM-L12-v2`, sectionEmbeddings por seção, 384 dims). O journal real permanece v1 e migra sozinho no primeiro start do `private-journal-dev` (nenhuma deleção necessária — Task 7 cobre).
+
+**Queries (paráfrases, sem reusar palavras exatas das entradas):**
+
+| # | Query | Antes (v2.0.1) | Depois (fork) |
+|---|---|---|---|
+| 1 | "problema de certificado ao rodar ferramentas node" (PT) | ✓ entrada certa #1, score 0.289 | ✓ certa #1, **0.506**, matched `Observations` |
+| 2 | "como medir sucesso de visibilidade de custos na nuvem" (PT) | ✗ entrada ERRADA #1 (0.201); a certa ficou abaixo do minScore | ✓ certa #1, **0.441**, matched `Observations` (a seção que contém a nota de FinOps) |
+| 3 | "quando vale desviar do processo com um usuário experiente com pressa" (PT) | ✗ entrada ERRADA #1 (0.224); a certa filtrada | ✓ certa #1, **0.405**, matched `Reflections` (exatamente a seção da reflexão) |
+| 4 | "TLS interception breaks npm installs" (EN→PT cross-lingual) | ✓ certa #1, 0.360 | ✓ certa #1, **0.492**, matched `Observations` |
+
+**Leitura:** recall passou de 2/4 para **4/4**; separação certa-vs-errada ficou muito mais discriminativa (ex.: Q4: 0.492 vs 0.102). O `matchedSection` apontou a seção relevante em todos os casos. **Decisão:** o default `paraphrase-multilingual-MiniLM-L12-v2` é suficiente — não trocar para `multilingual-e5-base` (Step 5 opcional não executado).
+
+**Caveats observados:**
+- Q3 venceu por margem apertada (0.405 vs 0.385 da entrada errada) — com corpus de 2 entradas é sinal fraco; reavaliar quando o journal crescer.
+- **Quirk pré-existente (também na v2.0.1 e no prod):** com `PRIVATE_JOURNAL_PATH` setado, project path e user path resolvem para o MESMO diretório → cada entrada aparece duplicada (uma como `project`, outra como `user`) nos resultados. Fora do escopo deste plano; candidato a fix futuro (dedup por realpath).
+- Modelo full-precision (465MB) cacheado em `<repo>/node_modules/@xenova/transformers/.cache/` — o `private-journal-dev` reusa; um futuro `npm ci` apaga o cache e re-baixa (precisa de `NODE_EXTRA_CA_CERTS`).
+
+---
+
 ## Open questions / decisions to confirm during execution
 
 - **Default model:** plan uses `paraphrase-multilingual-MiniLM-L12-v2` (no prefix, 384-dim). If PT recall still feels weak in Task 8, switch default to `multilingual-e5-base` (+ prefixes) — better quality, 768-dim, needs re-index.
