@@ -43,4 +43,24 @@ describe('max-over-sections ranking', () => {
     expect(results[0].matchedSection).toBe('A');
     expect(results[0].score).toBeGreaterThan(results[1].score);
   });
+
+  test('legacy v1 entry (no sectionEmbeddings) scored via whole-entry vector', async () => {
+    const day = path.join(projectDir, '2026-07-08');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(path.join(day, 'legacy.md'), '## X\n\nbody', 'utf8');
+    await fs.writeFile(path.join(day, 'legacy.embedding'), JSON.stringify({
+      // v1 format: no version, no model, no sectionEmbeddings
+      embedding: [0.1, 0.2, 0.3, 0.4, 0.5], // parallel to query → cos ~1
+      text: 'body', sections: ['X'],
+      timestamp: Date.now(), path: path.join(day, 'legacy.md'),
+    }), 'utf8');
+
+    const svc = new SearchService(projectDir, path.join(projectDir, 'no-user'));
+    const results = await svc.search('anything', { type: 'project', minScore: -1 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].path).toContain('legacy.md');
+    expect(results[0].score).toBeCloseTo(1, 5);
+    expect(results[0].matchedSection).toBeUndefined();
+  });
 });
