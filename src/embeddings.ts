@@ -4,8 +4,19 @@
 import { pipeline, FeatureExtractionPipeline } from '@xenova/transformers';
 import * as fs from 'fs/promises';
 
-export interface EmbeddingData {
+export const EMBEDDING_SCHEMA_VERSION = 2;
+
+export interface SectionEmbedding {
+  section: string;
+  text: string;
   embedding: number[];
+}
+
+export interface EmbeddingData {
+  version: number;                       // EMBEDDING_SCHEMA_VERSION
+  model: string;                         // model that produced these vectors
+  embedding: number[];                   // whole-entry vector (legacy/fallback)
+  sectionEmbeddings: SectionEmbedding[];
   text: string;
   sections: string[];
   timestamp: number;

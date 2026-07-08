@@ -4,7 +4,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { resolveUserJournalPath } from './paths.js';
-import { EmbeddingService, EmbeddingData } from './embeddings.js';
+import { EmbeddingService, EmbeddingData, SectionEmbedding, EMBEDDING_SCHEMA_VERSION } from './embeddings.js';
 
 export class JournalManager {
   private projectJournalPath: string;
@@ -154,20 +154,29 @@ ${sections.join('\n\n')}
     timestamp: Date
   ): Promise<void> {
     try {
-      const { text, sections } = this.embeddingService.extractSearchableText(content);
-      
+      const { text, sections, sectionChunks } = this.embeddingService.extractSearchableText(content);
+
       if (text.trim().length === 0) {
         return; // Skip empty entries
       }
 
       const embedding = await this.embeddingService.generateEmbedding(text, 'document');
-      
+
+      const sectionEmbeddings: SectionEmbedding[] = [];
+      for (const chunk of sectionChunks) {
+        const emb = await this.embeddingService.generateEmbedding(chunk.body, 'document');
+        sectionEmbeddings.push({ section: chunk.section, text: chunk.body, embedding: emb });
+      }
+
       const embeddingData: EmbeddingData = {
+        version: EMBEDDING_SCHEMA_VERSION,
+        model: this.embeddingService.getModelName(),
         embedding,
+        sectionEmbeddings,
         text,
         sections,
         timestamp: timestamp.getTime(),
-        path: filePath
+        path: filePath,
       };
 
       await this.embeddingService.saveEmbedding(filePath, embeddingData);

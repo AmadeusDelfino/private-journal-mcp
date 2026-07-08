@@ -100,6 +100,19 @@ beta insight body`;
     ]);
   });
 
+  test('extractSearchableText returns empty sectionChunks for content without headers', () => {
+    const { sections, sectionChunks } = EmbeddingService.getInstance().extractSearchableText('just plain text, no headers');
+    expect(sections).toEqual([]);
+    expect(sectionChunks).toEqual([]);
+  });
+
+  test('extractSearchableText excludes empty-body sections from sectionChunks but keeps them in sections', () => {
+    const md = '## Empty Section\n\n\n## Full Section\n\nreal body';
+    const { sections, sectionChunks } = EmbeddingService.getInstance().extractSearchableText(md);
+    expect(sections).toEqual(['Empty Section', 'Full Section']);
+    expect(sectionChunks).toEqual([{ section: 'Full Section', body: 'real body' }]);
+  });
+
   test('cosine similarity calculation works correctly', async () => {
     const embeddingService = EmbeddingService.getInstance();
     
@@ -147,6 +160,23 @@ beta insight body`;
       expect(embeddingData.sections).toContain('Technical Insights');
     }
   }, 60000);
+
+  test('writing an entry stores one embedding per non-empty section', async () => {
+    await journalManager.writeThoughts({
+      reflections: 'reflection body',
+      technical_insights: 'insight body',
+    });
+    // find the .embedding file under the user temp dir
+    const userRoot = path.join(userTempDir, '.private-journal');
+    const day = (await fs.readdir(userRoot)).find(d => /^\d{4}-\d{2}-\d{2}$/.test(d))!;
+    const embFile = (await fs.readdir(path.join(userRoot, day))).find(f => f.endsWith('.embedding'))!;
+    const data = JSON.parse(await fs.readFile(path.join(userRoot, day, embFile), 'utf8'));
+
+    expect(data.version).toBe(2);
+    expect(typeof data.model).toBe('string');
+    expect(data.sectionEmbeddings.map((s: any) => s.section)).toEqual(['Reflections', 'Technical Insights']);
+    expect(Array.isArray(data.sectionEmbeddings[0].embedding)).toBe(true);
+  });
 
   test('search service finds semantically similar entries', async () => {
     // Write some test entries
