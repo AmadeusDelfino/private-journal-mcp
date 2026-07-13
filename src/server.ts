@@ -9,6 +9,14 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { JournalManager } from './journal.js';
 import { SearchService } from './search.js';
+import { EmbeddingService } from './embeddings.js';
+import {
+  DEFAULT_THRESHOLD,
+  findRecurringThemes,
+  formatThemesOutput,
+  gatherThemeChunks,
+  parseThemeParams,
+} from './recurrence.js';
 
 export class PrivateJournalServer {
   private server: Server;
@@ -151,6 +159,57 @@ export class PrivateJournalServer {
                 enum: ['project', 'user', 'both'],
                 description: "Read project-specific notes, user-global notes, or both (default: both)",
                 default: 'both',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'find_recurring_themes',
+          description: "Detect themes that recur across journal entries by clustering their section embeddings. Read-only and fully offline: returns each recurring theme with evidence (distinct entries, date span, representative excerpts, source paths). Dream entries are excluded from the scanned corpus.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              days: {
+                type: 'number',
+                description: "Look-back window in days; 0 means all-time (default: 30)",
+                default: 30,
+              },
+              minEntries: {
+                type: 'number',
+                description: "Minimum distinct entries for a theme to qualify (default: 5)",
+                default: 5,
+              },
+              minDays: {
+                type: 'number',
+                description: "Minimum distinct days a theme must span (default: 2)",
+                default: 2,
+              },
+              threshold: {
+                type: 'number',
+                description: "Cosine similarity cutoff for clustering",
+                default: DEFAULT_THRESHOLD,
+              },
+              sections: {
+                type: 'array',
+                items: { type: 'string' },
+                description: "Restrict to section types (e.g., ['technical_insights'])",
+              },
+              type: {
+                type: 'string',
+                enum: ['project', 'user', 'both'],
+                description: "Scan project notes, user notes, or both (default: both)",
+                default: 'both',
+              },
+              limit: {
+                type: 'number',
+                description: "Maximum themes returned, ranked by strength (default: 20)",
+                default: 20,
+              },
+              preview: {
+                type: 'boolean',
+                description: "Return clustering statistics only, without excerpts — for sweeping thresholds (default: false)",
+                default: false,
               },
             },
             required: [],
@@ -312,6 +371,33 @@ export class PrivateJournalServer {
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
           throw new Error(`Failed to read recent entries: ${errorMessage}`);
+        }
+      }
+
+      if (request.params.name === 'find_recurring_themes') {
+        const params = parseThemeParams(args ?? {});
+
+        try {
+          const embeddings = await this.searchService.collectEmbeddings(params.type);
+          const embeddingService = EmbeddingService.getInstance();
+          const chunks = gatherThemeChunks(embeddings, {
+            now: Date.now(),
+            days: params.days,
+            sections: params.sections,
+            isCompatible: (entry) => embeddingService.isCompatible(entry),
+          });
+          const result = findRecurringThemes(chunks, params);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: formatThemesOutput(result, params),
+              },
+            ],
+          };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+          throw new Error(`Failed to find recurring themes: ${errorMessage}`);
         }
       }
 

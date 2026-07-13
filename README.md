@@ -141,6 +141,24 @@ Browse recent entries chronologically:
 - **type**: Entry scope - 'project', 'user', or 'both' (default: 'both')
 - **days**: Days back to search (default: 30)
 
+### `read_recent_entries`
+Read the full content of your most recent journal entries:
+- **limit**: Number of recent entries to read (default: 5)
+- **type**: Entry scope - 'project', 'user', or 'both' (default: 'both')
+
+### `find_recurring_themes`
+Detect themes that recur across entries by clustering their section embeddings (read-only, fully offline):
+- **days**: Look-back window in days, 0 = all-time (default: 30)
+- **minEntries**: Distinct entries a theme needs to qualify (default: 5)
+- **minDays**: Distinct days a theme must span (default: 2)
+- **threshold**: Cosine similarity cutoff for clustering (default: 0.65)
+- **sections**: Restrict to specific categories
+- **type**: Scan scope - 'project', 'user', or 'both' (default: 'both')
+- **limit**: Maximum themes returned (default: 20)
+- **preview**: Statistics only, for sweeping thresholds (default: false)
+
+Dream entries (see `record_dream`) are excluded from the scanned corpus.
+
 ## File Structure
 
 ### Project Journal (per project)

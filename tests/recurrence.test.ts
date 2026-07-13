@@ -1,6 +1,9 @@
 // ABOUTME: Unit tests for the recurrence engine and its supporting pure functions
 // ABOUTME: Injects synthetic vectors directly - no model, no transformers mock needed
 
+import * as path from 'path';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import {
   findRecurringThemes,
   ThemeChunk,
@@ -13,8 +16,8 @@ import {
   RecurringTheme,
   RecurrenceResult,
 } from '../src/recurrence';
-import { LoadedEmbedding } from '../src/search';
-import { EMBEDDING_SCHEMA_VERSION } from '../src/embeddings';
+import { LoadedEmbedding, SearchService } from '../src/search';
+import { EMBEDDING_SCHEMA_VERSION, EmbeddingService } from '../src/embeddings';
 
 const chunk = (over: Partial<ThemeChunk> = {}): ThemeChunk => ({
   vector: [1, 0, 0],
@@ -526,5 +529,84 @@ describe('formatThemesOutput', () => {
     expect(text).toContain('1 theme passes');
     expect(text).not.toContain('Theme:');
     expect(text).not.toContain('the recurring insight');
+  });
+});
+
+describe('end to end over an on-disk corpus (the handler composition seam)', () => {
+  let dir: string;
+  const model = EmbeddingService.getInstance().getModelName();
+
+  const writeEmbedding = async (
+    day: string,
+    name: string,
+    over: Record<string, unknown> = {}
+  ) => {
+    const dayDir = path.join(dir, day);
+    await fs.mkdir(dayDir, { recursive: true });
+    await fs.writeFile(path.join(dayDir, `${name}.md`), '## X\n\nbody', 'utf8');
+    await fs.writeFile(
+      path.join(dayDir, `${name}.embedding`),
+      JSON.stringify({
+        version: EMBEDDING_SCHEMA_VERSION,
+        model,
+        embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
+        sectionEmbeddings: [
+          { section: 'Technical Insights', text: `note ${name}`, embedding: [0.1, 0.2, 0.3, 0.4, 0.5] },
+        ],
+        text: `note ${name}`,
+        sections: ['Technical Insights'],
+        timestamp: Date.parse(`${day}T10:00:00Z`),
+        path: path.join(dayDir, `${name}.md`),
+        ...over,
+      }),
+      'utf8'
+    );
+  };
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'recurrence-e2e-'));
+  });
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  test('collect -> gather -> find -> format detects a theme; dream and foreign entries stay out; nothing is written', async () => {
+    await writeEmbedding('2026-07-01', 'e1');
+    await writeEmbedding('2026-07-01', 'e2');
+    await writeEmbedding('2026-07-02', 'e3');
+    await writeEmbedding('2026-07-03', 'e4');
+    await writeEmbedding('2026-07-03', 'e5');
+    await writeEmbedding('2026-07-02', 'dream', { dream: true });
+    await writeEmbedding('2026-07-02', 'foreign', { model: 'some-other-model' });
+
+    const before = (await fs.readdir(dir, { recursive: true })).sort();
+
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    const embeddings = await svc.collectEmbeddings('project');
+    const es = EmbeddingService.getInstance();
+    const chunks = gatherThemeChunks(embeddings, {
+      now: Date.now(),
+      days: 0,
+      isCompatible: e => es.isCompatible(e),
+    });
+    const result = findRecurringThemes(chunks, {
+      threshold: 0.9,
+      minEntries: 5,
+      minDays: 2,
+      limit: 20,
+    });
+
+    expect(result.themes).toHaveLength(1);
+    expect(result.themes[0].distinctEntries).toBe(5);
+    expect(result.stats.entriesScanned).toBe(5); // dream + foreign excluded before counting
+
+    const text = formatThemesOutput(result, parseThemeParams({ days: 0 }));
+    expect(text).toContain('1. [5 entries');
+    expect(text).not.toContain('dream.md');
+    expect(text).not.toContain('foreign.md');
+
+    // Read-only: the scan created, modified and deleted nothing.
+    const after = (await fs.readdir(dir, { recursive: true })).sort();
+    expect(after).toEqual(before);
   });
 });

@@ -266,8 +266,9 @@ export class SearchService {
   // HOME), scanning both would return every entry twice — halving the effective
   // limit and surfacing each hit side by side. In that case scan once, labeling
   // by the requested type (both/user -> 'user', since PRIVATE_JOURNAL_PATH is the
-  // personal journal).
-  private async collectEmbeddings(
+  // personal journal). Public: find_recurring_themes reuses this loader so the
+  // dedup applies to recurrence counting too.
+  async collectEmbeddings(
     type: 'project' | 'user' | 'both'
   ): Promise<LoadedEmbedding[]> {
     if (path.resolve(this.projectPath) === path.resolve(this.userPath)) {
