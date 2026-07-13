@@ -51,6 +51,10 @@ export class EmbeddingService {
     return this.modelName;
   }
 
+  isCompatible(entry: { version?: number; model?: string }): boolean {
+    return entry.version === EMBEDDING_SCHEMA_VERSION && entry.model === this.modelName;
+  }
+
   async initialize(): Promise<void> {
     if (this.initPromise) {
       return this.initPromise;
