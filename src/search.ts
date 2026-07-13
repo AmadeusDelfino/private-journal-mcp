@@ -122,16 +122,21 @@ export class SearchService {
     queryEmbedding: number[],
     entry: EmbeddingData
   ): { score: number; matchedSection?: string } {
+    const dimOk = (v: unknown): v is number[] =>
+      Array.isArray(v) && v.length === queryEmbedding.length;
+
     if (entry.sectionEmbeddings && entry.sectionEmbeddings.length > 0) {
       let best = -Infinity;
       let matchedSection: string | undefined;
       for (const se of entry.sectionEmbeddings) {
+        if (!dimOk(se.embedding)) continue; // corruption backstop: skip, never throw
         const s = this.embeddingService.cosineSimilarity(queryEmbedding, se.embedding);
         if (s > best) { best = s; matchedSection = se.section; }
       }
       return { score: best, matchedSection };
     }
     // Legacy fallback: whole-entry vector
+    if (!dimOk(entry.embedding)) return { score: -Infinity };
     return { score: this.embeddingService.cosineSimilarity(queryEmbedding, entry.embedding) };
   }
 
