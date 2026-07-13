@@ -218,6 +218,31 @@ npm run build
 npm test
 ```
 
+### Recalibrating the recurrence threshold
+
+`find_recurring_themes` clusters section embeddings with a cosine cutoff τ
+(`DEFAULT_THRESHOLD` in `src/recurrence.ts`, currently 0.7 — calibrated
+2026-07-13 against a ~24-entry corpus). The right value depends on the
+embedding model and drifts as the journal grows, so recalibrate when themes
+start looking too broad (one mega-cluster) or too narrow (only
+near-duplicates qualify):
+
+```bash
+npm run build
+npm run calibrate                # sweep τ 0.50–0.85 + themes at the current default
+npm run calibrate -- 0.65       # re-render themes at a candidate τ
+PRIVATE_JOURNAL_PATH=~/.private_journal npm run calibrate   # explicit journal location
+```
+
+The script is read-only and offline (no model load, nothing written). Pick
+the τ where the printed themes are semantically coherent — excerpts within a
+theme visibly about the same thing, unrelated topics not sharing a cluster —
+then update `DEFAULT_THRESHOLD` in `src/recurrence.ts` and the default
+documented in this README's `find_recurring_themes` section. Tests reference
+the constant by import, so no test changes are needed. The `preview: true`
+parameter of `find_recurring_themes` offers the same statistics through the
+MCP tool itself for a quick in-session check.
+
 ### Development Mode
 
 ```bash
