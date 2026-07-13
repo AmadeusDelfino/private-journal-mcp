@@ -7,6 +7,11 @@ import {
   EngineOptions,
   gatherThemeChunks,
   GatherOptions,
+  parseThemeParams,
+  formatThemesOutput,
+  DEFAULT_THRESHOLD,
+  RecurringTheme,
+  RecurrenceResult,
 } from '../src/recurrence';
 import { LoadedEmbedding } from '../src/search';
 import { EMBEDDING_SCHEMA_VERSION } from '../src/embeddings';
@@ -396,5 +401,130 @@ describe('gatherThemeChunks', () => {
     const first = emb({ timestamp: ts, diskPath: '/journal/2026-07-10/aa.embedding' });
     const chunks = gatherThemeChunks([second, first], gopts());
     expect(chunks.map(c => c.text)).toEqual(['insight', 'z1', 'z2']);
+  });
+});
+
+describe('parseThemeParams', () => {
+  test('applies the spec defaults on an empty argument object', () => {
+    expect(parseThemeParams({})).toEqual({
+      days: 30,
+      minEntries: 5,
+      minDays: 2,
+      threshold: DEFAULT_THRESHOLD,
+      sections: undefined,
+      type: 'both',
+      limit: 20,
+      preview: false,
+    });
+  });
+
+  test('honors explicit values, including days 0 (all-time)', () => {
+    const params = parseThemeParams({
+      days: 0,
+      minEntries: 3,
+      minDays: 1,
+      threshold: 0.8,
+      sections: ['technical_insights', 42],
+      type: 'project',
+      limit: 5,
+      preview: true,
+    });
+    expect(params.days).toBe(0);
+    expect(params.minEntries).toBe(3);
+    expect(params.minDays).toBe(1);
+    expect(params.threshold).toBe(0.8);
+    expect(params.sections).toEqual(['technical_insights']); // non-strings dropped
+    expect(params.type).toBe('project');
+    expect(params.limit).toBe(5);
+    expect(params.preview).toBe(true);
+  });
+
+  test('falls back on wrong-typed values', () => {
+    const params = parseThemeParams({ days: 'ten', type: 'everything', preview: 'yes' });
+    expect(params.days).toBe(30);
+    expect(params.type).toBe('both');
+    expect(params.preview).toBe(false);
+  });
+});
+
+describe('formatThemesOutput', () => {
+  const theme: RecurringTheme = {
+    representativeExcerpt: 'the recurring insight about embeddings',
+    supportingExcerpts: ['second sighting', 'third sighting'],
+    distinctEntries: 5,
+    occurrences: 7,
+    distinctDays: 3,
+    dateSpan: { start: '2026-07-01', end: '2026-07-03' },
+    sectionDistribution: { 'Technical Insights': 4, 'Project Notes': 3 },
+    cohesion: 0.912345,
+    sourcePaths: ['/j/2026-07-01/e1.md', '/j/2026-07-03/e5.md'],
+    type: 'user',
+  };
+  const result: RecurrenceResult = {
+    themes: [theme],
+    stats: {
+      chunksScanned: 12,
+      entriesScanned: 6,
+      clustersFormed: 2,
+      largestClusterEntries: 5,
+      themesQualifying: 1,
+    },
+  };
+  const params = parseThemeParams({});
+
+  test('renders a header with the window, echoed params and scan counts', () => {
+    const text = formatThemesOutput(result, params);
+    expect(text).toContain('last 30 days');
+    expect(text).toContain(`threshold ${DEFAULT_THRESHOLD}`);
+    expect(text).toContain('minEntries 5');
+    expect(text).toContain('minDays 2');
+    expect(text).toContain('6 entries');
+    expect(text).toContain('12 section chunks');
+  });
+
+  test('renders numbered themes with evidence, excerpts and sources', () => {
+    const text = formatThemesOutput(result, params);
+    expect(text).toContain('1. [5 entries / 7 occurrences / 3 days] 2026-07-01 → 2026-07-03 (user, cohesion 0.91)');
+    expect(text).toContain('Sections: Technical Insights ×4, Project Notes ×3');
+    expect(text).toContain('Theme: the recurring insight about embeddings');
+    expect(text).toContain('Also: second sighting');
+    expect(text).toContain('Sources: /j/2026-07-01/e1.md, /j/2026-07-03/e5.md');
+  });
+
+  test('days 0 reads as all time', () => {
+    expect(formatThemesOutput(result, parseThemeParams({ days: 0 }))).toContain('all time');
+  });
+
+  test('long excerpts are truncated (600 representative / 200 supporting)', () => {
+    const long: RecurrenceResult = {
+      ...result,
+      themes: [
+        { ...theme, representativeExcerpt: 'R'.repeat(700), supportingExcerpts: ['S'.repeat(300)] },
+      ],
+    };
+    const text = formatThemesOutput(long, params);
+    expect(text).toContain('R'.repeat(600) + '...');
+    expect(text).not.toContain('R'.repeat(601));
+    expect(text).toContain('S'.repeat(200) + '...');
+    expect(text).not.toContain('S'.repeat(201));
+  });
+
+  test('empty result says so, still reporting the scan', () => {
+    const empty: RecurrenceResult = {
+      themes: [],
+      stats: { chunksScanned: 3, entriesScanned: 2, clustersFormed: 0, largestClusterEntries: 1, themesQualifying: 0 },
+    };
+    const text = formatThemesOutput(empty, params);
+    expect(text).toContain('No recurring themes found');
+    expect(text).toContain('2 entries');
+  });
+
+  test('preview mode reports statistics only, no excerpts', () => {
+    const text = formatThemesOutput(result, parseThemeParams({ preview: true }));
+    expect(text).toContain('2 clusters formed');
+    expect(text).toContain('Largest cluster spans 5 distinct entries');
+    expect(text).toContain('1 theme passes');
+    expect(text).not.toContain('Theme:');
+    expect(text).not.toContain('the recurring insight');
   });
 });

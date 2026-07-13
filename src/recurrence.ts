@@ -244,3 +244,78 @@ export function gatherThemeChunks(
     (a, b) => a.timestamp - b.timestamp || a.entryPath.localeCompare(b.entryPath)
   );
 }
+
+export interface ThemeParams {
+  days: number;
+  minEntries: number;
+  minDays: number;
+  threshold: number;
+  sections?: string[];
+  type: 'project' | 'user' | 'both';
+  limit: number;
+  preview: boolean;
+}
+
+export function parseThemeParams(args: Record<string, unknown>): ThemeParams {
+  return {
+    days: typeof args.days === 'number' ? args.days : 30,
+    minEntries: typeof args.minEntries === 'number' ? args.minEntries : 5,
+    minDays: typeof args.minDays === 'number' ? args.minDays : 2,
+    threshold: typeof args.threshold === 'number' ? args.threshold : DEFAULT_THRESHOLD,
+    sections: Array.isArray(args.sections)
+      ? args.sections.filter((s): s is string => typeof s === 'string')
+      : undefined,
+    type:
+      args.type === 'project' || args.type === 'user' || args.type === 'both'
+        ? args.type
+        : 'both',
+    limit: typeof args.limit === 'number' ? args.limit : 20,
+    preview: args.preview === true,
+  };
+}
+
+function truncate(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length > max ? clean.slice(0, max) + '...' : clean;
+}
+
+export function formatThemesOutput(result: RecurrenceResult, params: ThemeParams): string {
+  const { themes, stats } = result;
+  const window = params.days > 0 ? `last ${params.days} days` : 'all time';
+  const header =
+    `Recurring themes (${window}, threshold ${params.threshold}, ` +
+    `minEntries ${params.minEntries}, minDays ${params.minDays}): ` +
+    `scanned ${stats.entriesScanned} entries (${stats.chunksScanned} section chunks), ` +
+    `${stats.clustersFormed} clusters formed.`;
+
+  if (params.preview) {
+    return (
+      `${header}\n` +
+      `Largest cluster spans ${stats.largestClusterEntries} distinct entries; ` +
+      `${stats.themesQualifying} theme${stats.themesQualifying === 1 ? ' passes' : 's pass'} the thresholds.`
+    );
+  }
+
+  if (themes.length === 0) {
+    return `${header}\nNo recurring themes found.`;
+  }
+
+  const body = themes
+    .map((t, i) => {
+      const distribution = Object.entries(t.sectionDistribution)
+        .map(([section, count]) => `${section} ×${count}`)
+        .join(', ');
+      const lines = [
+        `${i + 1}. [${t.distinctEntries} entries / ${t.occurrences} occurrences / ${t.distinctDays} days] ` +
+          `${t.dateSpan.start} → ${t.dateSpan.end} (${t.type}, cohesion ${t.cohesion.toFixed(2)})`,
+        `   Sections: ${distribution}`,
+        `   Theme: ${truncate(t.representativeExcerpt, 600)}`,
+        ...t.supportingExcerpts.map(e => `   Also: ${truncate(e, 200)}`),
+        `   Sources: ${t.sourcePaths.join(', ')}`,
+      ];
+      return lines.join('\n');
+    })
+    .join('\n\n');
+
+  return `${header}\n\n${body}`;
+}
