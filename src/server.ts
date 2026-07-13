@@ -215,6 +215,20 @@ export class PrivateJournalServer {
             required: [],
           },
         },
+        {
+          name: 'record_dream',
+          description: "Record a dream entry — a consolidation written after reviewing recurring themes (see find_recurring_themes). Stored in the user journal and searchable like any entry, but excluded from future recurrence scans.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              content: {
+                type: 'string',
+                description: "The dream narrative in markdown: what recurred (with evidence), loose threads, and any memory-promotion candidates",
+              },
+            },
+            required: ['content'],
+          },
+        },
       ],
     }));
 
@@ -398,6 +412,27 @@ export class PrivateJournalServer {
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
           throw new Error(`Failed to find recurring themes: ${errorMessage}`);
+        }
+      }
+
+      if (request.params.name === 'record_dream') {
+        if (!args || typeof args.content !== 'string' || args.content.trim().length === 0) {
+          throw new Error('content is required and must be a non-empty string');
+        }
+
+        try {
+          const filePath = await this.journalManager.writeDream(args.content);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Dream recorded at ${filePath}`,
+              },
+            ],
+          };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+          throw new Error(`Failed to record dream: ${errorMessage}`);
         }
       }
 

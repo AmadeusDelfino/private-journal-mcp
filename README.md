@@ -159,6 +159,12 @@ Detect themes that recur across entries by clustering their section embeddings (
 
 Dream entries (see `record_dream`) are excluded from the scanned corpus.
 
+### `record_dream`
+Record a consolidation entry ("dream") written after reviewing recurring themes:
+- **content** (required): The dream narrative in markdown
+
+Dream entries live in the user journal and are searchable like any other entry, but they never feed `find_recurring_themes` — preventing feedback loops.
+
 ## File Structure
 
 ### Project Journal (per project)

@@ -64,6 +64,27 @@ export class JournalManager {
     return `${hours}-${minutes}-${seconds}-${microseconds}`;
   }
 
+  private formatFrontmatter(timestamp: Date, extraLines: string[] = []): string {
+    const timeDisplay = timestamp.toLocaleTimeString('en-US', {
+      hour12: true,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+    const dateDisplay = timestamp.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    const lines = [
+      `title: "${timeDisplay} - ${dateDisplay}"`,
+      `date: ${timestamp.toISOString()}`,
+      `timestamp: ${timestamp.getTime()}`,
+      ...extraLines,
+    ];
+    return `---\n${lines.join('\n')}\n---\n`;
+  }
+
   private async writeThoughtsToLocation(
     thoughts: {
       reflections?: string;
@@ -92,6 +113,24 @@ export class JournalManager {
     await this.generateEmbeddingForEntry(filePath, formattedEntry, timestamp);
   }
 
+  async writeDream(content: string): Promise<string> {
+    const timestamp = new Date();
+    const dateString = this.formatDate(timestamp);
+    const timeString = this.formatTimestamp(timestamp);
+
+    // Dream entries are meta-reflection about the person: user journal.
+    const dayDirectory = path.join(this.userJournalPath, dateString);
+    const filePath = path.join(dayDirectory, `${timeString}.md`);
+
+    await this.ensureDirectoryExists(dayDirectory);
+
+    const formattedEntry = `${this.formatFrontmatter(timestamp, ['dream: true'])}\n## Dream\n\n${content}\n`;
+    await fs.writeFile(filePath, formattedEntry, 'utf8');
+
+    await this.generateEmbeddingForEntry(filePath, formattedEntry, timestamp);
+    return filePath;
+  }
+
   private formatThoughts(thoughts: {
     reflections?: string;
     observations?: string;
@@ -100,20 +139,8 @@ export class JournalManager {
     technical_insights?: string;
     world_knowledge?: string;
   }, timestamp: Date): string {
-    const timeDisplay = timestamp.toLocaleTimeString('en-US', { 
-      hour12: true, 
-      hour: 'numeric', 
-      minute: '2-digit', 
-      second: '2-digit' 
-    });
-    const dateDisplay = timestamp.toLocaleDateString('en-US', { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    });
-
     const sections = [];
-    
+
     if (thoughts.reflections) {
       sections.push(`## Reflections\n\n${thoughts.reflections}`);
     }
@@ -125,27 +152,20 @@ export class JournalManager {
     if (thoughts.project_notes) {
       sections.push(`## Project Notes\n\n${thoughts.project_notes}`);
     }
-    
+
     if (thoughts.user_context) {
       sections.push(`## User Context\n\n${thoughts.user_context}`);
     }
-    
+
     if (thoughts.technical_insights) {
       sections.push(`## Technical Insights\n\n${thoughts.technical_insights}`);
     }
-    
+
     if (thoughts.world_knowledge) {
       sections.push(`## World Knowledge\n\n${thoughts.world_knowledge}`);
     }
 
-    return `---
-title: "${timeDisplay} - ${dateDisplay}"
-date: ${timestamp.toISOString()}
-timestamp: ${timestamp.getTime()}
----
-
-${sections.join('\n\n')}
-`;
+    return `${this.formatFrontmatter(timestamp)}\n${sections.join('\n\n')}\n`;
   }
 
   private async regenerateEmbedding(
