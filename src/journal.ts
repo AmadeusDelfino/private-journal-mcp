@@ -163,6 +163,12 @@ ${sections.join('\n\n')}
       return false; // nothing to embed; not a success, not an error
     }
 
+    // The .md front-matter is the durable dream marker; mirror it onto the
+    // .embedding so the recurrence engine can filter without reading .md
+    // files. Re-derived on every regen so the flag survives re-indexing.
+    const frontmatter = content.match(/^---\n([\s\S]*?)\n---\n/);
+    const isDream = frontmatter !== null && /^dream: true$/m.test(frontmatter[1]);
+
     const embedding = await this.embeddingService.generateEmbedding(text, 'document');
 
     const sectionEmbeddings: SectionEmbedding[] = [];
@@ -180,6 +186,7 @@ ${sections.join('\n\n')}
       sections,
       timestamp: timestamp.getTime(),
       path: filePath,
+      ...(isDream ? { dream: true } : {}),
     };
 
     await this.embeddingService.saveEmbedding(filePath, embeddingData);

@@ -21,6 +21,7 @@ export interface EmbeddingData {
   sections: string[];
   timestamp: number;
   path: string;
+  dream?: boolean;                       // dream entries: searchable, but never feed recurrence
 }
 
 export class EmbeddingService {
