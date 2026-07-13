@@ -136,6 +136,31 @@ describe('dimension floor (crash safety)', () => {
     const svc = new SearchService(dir, path.join(dir, 'no-user'));
     await expect(svc.search('anything', { type: 'project', minScore: -1 })).resolves.toEqual([]);
   });
+
+  test('a non-array sectionEmbeddings container falls through to the legacy whole-entry branch', async () => {
+    // Hand-crafted entry: sectionEmbeddings is a non-array object with a
+    // truthy numeric length (`{ length: 1 }`). The old condition
+    // `entry.sectionEmbeddings && entry.sectionEmbeddings.length > 0` was
+    // truthy here too, reaching the for...of and throwing "is not iterable",
+    // which rejected the whole search(). The floor must guard with
+    // Array.isArray and fall through to the legacy whole-entry-vector branch.
+    const day = path.join(dir, '2026-07-08');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(path.join(day, 'nonarray.md'), '## X\n\nbody', 'utf8');
+    await fs.writeFile(path.join(day, 'nonarray.embedding'), JSON.stringify({
+      version: EMBEDDING_SCHEMA_VERSION, model,
+      embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
+      sectionEmbeddings: { length: 1 },
+      text: 'body', sections: ['X'],
+      timestamp: Date.now(), path: path.join(day, 'nonarray.md'),
+    }), 'utf8');
+
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    const results = await svc.search('anything', { type: 'project', minScore: -1 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].path).toContain('nonarray.md');
+  });
 });
 
 describe('model-identity ceiling', () => {
