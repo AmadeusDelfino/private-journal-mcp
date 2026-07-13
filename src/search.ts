@@ -6,7 +6,7 @@ import * as path from 'path';
 import { EmbeddingService, EmbeddingData } from './embeddings.js';
 import { resolveUserJournalPath, resolveProjectJournalPath } from './paths.js';
 
-type LoadedEmbedding = EmbeddingData & { type: 'project' | 'user'; diskPath: string };
+export type LoadedEmbedding = EmbeddingData & { type: 'project' | 'user'; diskPath: string };
 
 export interface SearchResult {
   path: string;

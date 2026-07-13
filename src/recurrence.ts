@@ -1,7 +1,9 @@
 // ABOUTME: Recurrence engine detecting themes that recur across journal entries
 // ABOUTME: Pure functions over pre-computed section vectors - no model, no I/O
 
+import * as path from 'path';
 import { cosineSimilarity } from './embeddings.js';
+import { LoadedEmbedding } from './search.js';
 
 export const DEFAULT_THRESHOLD = 0.65; // provisional; calibrated against the real corpus (plan Task 7)
 
@@ -188,4 +190,57 @@ export function findRecurringThemes(
   };
 
   return { themes: qualifying.slice(0, limit).map(({ theme }) => theme), stats };
+}
+
+export interface GatherOptions {
+  now: number;
+  days: number; // 0 = all-time
+  sections?: string[];
+  isCompatible: (entry: { version?: number; model?: string }) => boolean;
+}
+
+// Corpus -> engine input. Applies the spec's exclusions (dream entries,
+// incompatible vectors, out-of-window, unwanted sections, structural
+// corruption) and sorts chronologically so clustering is deterministic
+// regardless of filesystem enumeration order.
+export function gatherThemeChunks(
+  embeddings: LoadedEmbedding[],
+  options: GatherOptions
+): ThemeChunk[] {
+  const { now, days, sections, isCompatible } = options;
+  const cutoff = days > 0 ? now - days * 24 * 60 * 60 * 1000 : -Infinity;
+
+  const chunks: ThemeChunk[] = [];
+  for (const entry of embeddings) {
+    if (entry.dream === true) continue; // dreams never feed the loop
+    if (!isCompatible(entry)) continue; // foreign model/schema -> garbage similarities
+    if (typeof entry.timestamp !== 'number' || entry.timestamp < cutoff) continue;
+    if (!Array.isArray(entry.sectionEmbeddings)) continue;
+
+    const entryPath = entry.diskPath.replace(/\.embedding$/, '.md');
+    const date = path.basename(path.dirname(entry.diskPath));
+
+    for (const se of entry.sectionEmbeddings) {
+      if (!se || typeof se.section !== 'string' || typeof se.text !== 'string') continue;
+      if (!Array.isArray(se.embedding) || se.embedding.length === 0) continue;
+      if (sections && sections.length > 0) {
+        const wanted = sections.some(s => se.section.toLowerCase().includes(s.toLowerCase()));
+        if (!wanted) continue;
+      }
+      chunks.push({
+        vector: se.embedding,
+        entryPath,
+        date,
+        timestamp: entry.timestamp,
+        section: se.section,
+        text: se.text,
+        type: entry.type,
+      });
+    }
+  }
+
+  // Stable sort: within an entry, section order is preserved.
+  return chunks.sort(
+    (a, b) => a.timestamp - b.timestamp || a.entryPath.localeCompare(b.entryPath)
+  );
 }

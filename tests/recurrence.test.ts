@@ -5,7 +5,11 @@ import {
   findRecurringThemes,
   ThemeChunk,
   EngineOptions,
+  gatherThemeChunks,
+  GatherOptions,
 } from '../src/recurrence';
+import { LoadedEmbedding } from '../src/search';
+import { EMBEDDING_SCHEMA_VERSION } from '../src/embeddings';
 
 const chunk = (over: Partial<ThemeChunk> = {}): ThemeChunk => ({
   vector: [1, 0, 0],
@@ -265,5 +269,132 @@ describe('findRecurringThemes - ranking and limit', () => {
     ];
     const { themes } = findRecurringThemes(chunks, opts({ minEntries: 2, minDays: 1 }));
     expect(themes[0].type).toBe('both');
+  });
+});
+
+describe('gatherThemeChunks', () => {
+  // Loosely typed on purpose (house style of the existing search tests): the
+  // corruption cases deliberately violate the LoadedEmbedding shape.
+  const emb = (over: Record<string, any> = {}): LoadedEmbedding =>
+    ({
+      version: EMBEDDING_SCHEMA_VERSION,
+      model: 'test-model',
+      embedding: [1, 0, 0],
+      sectionEmbeddings: [
+        { section: 'Technical Insights', text: 'insight', embedding: [1, 0, 0] },
+      ],
+      text: 'insight',
+      sections: ['Technical Insights'],
+      timestamp: Date.parse('2026-07-10T10:00:00Z'),
+      path: '/stored/elsewhere.md',
+      type: 'user',
+      diskPath: '/journal/2026-07-10/a.embedding',
+      ...over,
+    }) as LoadedEmbedding;
+
+  const gopts = (over: Partial<GatherOptions> = {}): GatherOptions => ({
+    now: Date.parse('2026-07-13T12:00:00Z'),
+    days: 30,
+    isCompatible: e => e.version === EMBEDDING_SCHEMA_VERSION && e.model === 'test-model',
+    ...over,
+  });
+
+  test('explodes section embeddings into chunks with disk-derived path and date', () => {
+    const chunks = gatherThemeChunks(
+      [
+        emb({
+          sectionEmbeddings: [
+            { section: 'Technical Insights', text: 'a', embedding: [1, 0, 0] },
+            { section: 'Project Notes', text: 'b', embedding: [0, 1, 0] },
+          ],
+        }),
+      ],
+      gopts()
+    );
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]).toEqual({
+      vector: [1, 0, 0],
+      entryPath: '/journal/2026-07-10/a.md', // from diskPath, not the stored path
+      date: '2026-07-10',                    // from the day directory
+      timestamp: Date.parse('2026-07-10T10:00:00Z'),
+      section: 'Technical Insights',
+      text: 'a',
+      type: 'user',
+    });
+    expect(chunks[1].section).toBe('Project Notes');
+  });
+
+  test('dream entries never feed the corpus', () => {
+    expect(gatherThemeChunks([emb({ dream: true })], gopts())).toHaveLength(0);
+  });
+
+  test('incompatible entries are excluded via the predicate', () => {
+    const chunks = gatherThemeChunks(
+      [emb(), emb({ model: 'other-model', diskPath: '/journal/2026-07-10/b.embedding' })],
+      gopts()
+    );
+    expect(chunks).toHaveLength(1);
+  });
+
+  test('the window filters by timestamp; days 0 means all-time', () => {
+    const old = emb({
+      timestamp: Date.parse('2026-05-01T10:00:00Z'),
+      diskPath: '/journal/2026-05-01/old.embedding',
+    });
+    expect(gatherThemeChunks([emb(), old], gopts({ days: 30 }))).toHaveLength(1);
+    expect(gatherThemeChunks([emb(), old], gopts({ days: 0 }))).toHaveLength(2);
+  });
+
+  test('sections filter matches case-insensitively by substring, per chunk', () => {
+    const e = emb({
+      sectionEmbeddings: [
+        { section: 'Technical Insights', text: 'a', embedding: [1, 0, 0] },
+        { section: 'Project Notes', text: 'b', embedding: [0, 1, 0] },
+      ],
+    });
+    const chunks = gatherThemeChunks([e], gopts({ sections: ['technical'] }));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].section).toBe('Technical Insights');
+  });
+
+  test('structural corruption is skipped, never thrown', () => {
+    const broken = [
+      emb({ sectionEmbeddings: { length: 1 }, diskPath: '/journal/2026-07-10/b.embedding' }),
+      emb({ sectionEmbeddings: [null], diskPath: '/journal/2026-07-10/c.embedding' }),
+      emb({
+        sectionEmbeddings: [{ section: 'X', text: 'x', embedding: [] }],
+        diskPath: '/journal/2026-07-10/d.embedding',
+      }),
+      emb({ timestamp: undefined, diskPath: '/journal/2026-07-10/e.embedding' }),
+    ];
+    expect(gatherThemeChunks([emb(), ...broken], gopts())).toHaveLength(1);
+  });
+
+  test('chunks come out chronologically sorted regardless of input order', () => {
+    const mk = (iso: string, name: string) =>
+      emb({ timestamp: Date.parse(iso), diskPath: `/journal/${iso.slice(0, 10)}/${name}.embedding` });
+    const shuffled = [
+      mk('2026-07-12T10:00:00Z', 'c'),
+      mk('2026-07-10T10:00:00Z', 'a'),
+      mk('2026-07-11T10:00:00Z', 'b'),
+    ];
+    const chunks = gatherThemeChunks(shuffled, gopts());
+    expect(chunks.map(c => c.date)).toEqual(['2026-07-10', '2026-07-11', '2026-07-12']);
+  });
+
+  test('same-timestamp entries tie-break by path; sections keep their in-entry order', () => {
+    const ts = Date.parse('2026-07-10T10:00:00Z');
+    const second = emb({
+      timestamp: ts,
+      diskPath: '/journal/2026-07-10/zz.embedding',
+      sectionEmbeddings: [
+        { section: 'S1', text: 'z1', embedding: [1, 0, 0] },
+        { section: 'S2', text: 'z2', embedding: [1, 0, 0] },
+      ],
+    });
+    const first = emb({ timestamp: ts, diskPath: '/journal/2026-07-10/aa.embedding' });
+    const chunks = gatherThemeChunks([second, first], gopts());
+    expect(chunks.map(c => c.text)).toEqual(['insight', 'z1', 'z2']);
   });
 });
