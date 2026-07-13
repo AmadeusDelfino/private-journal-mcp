@@ -80,6 +80,37 @@ npx github:obra/private-journal-mcp --journal-path /path/to/journals
 
 This only overrides the project journal path. The user journal path still resolves via `PRIVATE_JOURNAL_PATH` or the default home directory logic.
 
+#### Embedding model environment variables
+
+Semantic search runs a local [transformers.js](https://github.com/xenova/transformers.js) feature-extraction model. Four optional environment variables control which model runs and how text is fed to it. All are optional — the defaults work out of the box.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PRIVATE_JOURNAL_EMBED_MODEL` | `Xenova/paraphrase-multilingual-MiniLM-L12-v2` | Hugging Face id of any transformers.js feature-extraction model to use for embeddings. The default is multilingual, so non-English journals search well. |
+| `PRIVATE_JOURNAL_EMBED_QUANTIZED` | `false` | Set to `true` to load quantized (int8) weights: smaller download and faster load, at some cost to embedding quality. The default is full precision. |
+| `PRIVATE_JOURNAL_EMBED_QUERY_PREFIX` | *(empty)* | String prepended to every search query before it is embedded. |
+| `PRIVATE_JOURNAL_EMBED_DOC_PREFIX` | *(empty)* | String prepended to every journal entry before it is embedded. |
+
+The two prefix variables exist for **asymmetric** models (e.g. E5, BGE) that are trained to receive inputs tagged by role — typically `query: ` for searches and `passage: ` for stored text. When you switch to such a model you must set the matching prefixes; leaving them empty degrades search quality silently. Symmetric models like the default need no prefixes, which is why both default to empty.
+
+```json
+{
+  "mcpServers": {
+    "private-journal": {
+      "command": "npx",
+      "args": ["github:obra/private-journal-mcp"],
+      "env": {
+        "PRIVATE_JOURNAL_EMBED_MODEL": "Xenova/multilingual-e5-small",
+        "PRIVATE_JOURNAL_EMBED_QUERY_PREFIX": "query: ",
+        "PRIVATE_JOURNAL_EMBED_DOC_PREFIX": "passage: "
+      }
+    }
+  }
+}
+```
+
+Each `.embedding` file records the model that produced it. When you change `PRIVATE_JOURNAL_EMBED_MODEL`, entries whose recorded model no longer matches are re-embedded automatically from their `.md` source on the next startup (the `.md` files are the source of truth). Changing `PRIVATE_JOURNAL_EMBED_QUANTIZED` or the prefix variables under the same model does **not** trigger automatic re-embedding — delete the affected `.embedding` files to force a rebuild on the next startup.
+
 ## MCP Tools
 
 The server provides comprehensive journaling and search capabilities:
