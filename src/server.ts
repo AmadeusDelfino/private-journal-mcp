@@ -193,7 +193,7 @@ export class PrivateJournalServer {
               sections: {
                 type: 'array',
                 items: { type: 'string' },
-                description: "Restrict to section types (e.g., ['technical_insights'])",
+                description: "Restrict to section types (e.g., ['technical insights'])",
               },
               type: {
                 type: 'string',
