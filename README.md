@@ -151,7 +151,7 @@ Detect themes that recur across entries by clustering their section embeddings (
 - **days**: Look-back window in days, 0 = all-time (default: 30)
 - **minEntries**: Distinct entries a theme needs to qualify (default: 5)
 - **minDays**: Distinct days a theme must span (default: 2)
-- **threshold**: Cosine similarity cutoff for clustering (default: 0.65)
+- **threshold**: Cosine similarity cutoff for clustering (default: 0.7)
 - **sections**: Restrict to specific categories
 - **type**: Scan scope - 'project', 'user', or 'both' (default: 'both')
 - **limit**: Maximum themes returned (default: 20)

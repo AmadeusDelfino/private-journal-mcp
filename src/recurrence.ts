@@ -5,7 +5,7 @@ import * as path from 'path';
 import { cosineSimilarity } from './embeddings.js';
 import { LoadedEmbedding } from './search.js';
 
-export const DEFAULT_THRESHOLD = 0.65; // provisional; calibrated against the real corpus (plan Task 7)
+export const DEFAULT_THRESHOLD = 0.7; // calibrated 2026-07-13 against the real corpus (paraphrase-multilingual-MiniLM-L12-v2)
 
 export interface ThemeChunk {
   vector: number[];

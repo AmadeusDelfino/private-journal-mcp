@@ -279,5 +279,6 @@ engine's clustering contract.
 
 ## Open items
 
-- Fix a sensible default for `threshold` (τ) after empirical calibration against
-  `paraphrase-multilingual-MiniLM-L12-v2` on the real journal.
+- ~~Fix a sensible default for `threshold` (τ)~~ — calibrated 2026-07-13 against
+  the real corpus (~24 entries, paraphrase-multilingual-MiniLM-L12-v2):
+  default fixed at τ = 0.70.
