@@ -190,6 +190,8 @@ beta insight body`;
 
     const count = await journalManager.generateMissingEmbeddings();
     expect(count).toBe(1);
+    expect(jest.mocked(console.error))
+      .toHaveBeenCalledWith(expect.stringContaining('Generating/refreshing embedding for'));
     const migrated = JSON.parse(await fs.readFile(embPath, 'utf8'));
     expect(migrated.version).toBe(2);
     expect(migrated.sectionEmbeddings.length).toBeGreaterThan(0);
@@ -431,6 +433,8 @@ beta insight body`;
 
       await expect(service.generateEmbedding('test'))
         .rejects.toThrow(/timed out/i);
+      expect(jest.mocked(console.error))
+        .toHaveBeenCalledWith('Failed to load embedding model:', expect.any(Error));
     });
 
     test('can retry after timeout', async () => {
@@ -444,6 +448,8 @@ beta insight body`;
 
       await expect(service.generateEmbedding('test'))
         .rejects.toThrow(/timed out/i);
+      expect(jest.mocked(console.error))
+        .toHaveBeenCalledWith('Failed to load embedding model:', expect.any(Error));
 
       // Second call: succeed
       transformers.pipeline = originalPipelineMock;
