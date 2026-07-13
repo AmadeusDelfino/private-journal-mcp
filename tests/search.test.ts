@@ -75,7 +75,7 @@ describe('dimension floor (crash safety)', () => {
     await fs.mkdir(day, { recursive: true });
     await fs.writeFile(path.join(day, `${name}.md`), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
-      version: 2, model, embedding, sectionEmbeddings,
+      version: EMBEDDING_SCHEMA_VERSION, model, embedding, sectionEmbeddings,
       text: 'body', sections: sectionEmbeddings.map((s: any) => s?.section),
       timestamp: Date.now(), path: path.join(day, `${name}.md`),
     }), 'utf8');
@@ -120,14 +120,14 @@ describe('dimension floor (crash safety)', () => {
     await fs.mkdir(day, { recursive: true });
     await fs.writeFile(path.join(day, 'wrongdim.md'), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, 'wrongdim.embedding'), JSON.stringify({
-      version: 2, model,
+      version: EMBEDDING_SCHEMA_VERSION, model,
       embedding: [1, 2, 3], // 3-dim vs 5-dim query → floor excludes
       text: 'body', sections: ['X'],
       timestamp: Date.now(), path: path.join(day, 'wrongdim.md'),
     }), 'utf8');
     await fs.writeFile(path.join(day, 'nullwhole.md'), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, 'nullwhole.embedding'), JSON.stringify({
-      version: 2, model,
+      version: EMBEDDING_SCHEMA_VERSION, model,
       embedding: null,
       text: 'body', sections: ['X'],
       timestamp: Date.now(), path: path.join(day, 'nullwhole.md'),
@@ -172,7 +172,7 @@ describe('model-identity ceiling', () => {
     await fs.mkdir(day, { recursive: true });
     await fs.writeFile(path.join(day, `${name}.md`), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
-      version: 2, model: entryModel,
+      version: EMBEDDING_SCHEMA_VERSION, model: entryModel,
       embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
       sectionEmbeddings: [{ section: 'A', text: 'a', embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }],
       text: 'body', sections: ['A'], timestamp: Date.now(), path: path.join(day, `${name}.md`),
