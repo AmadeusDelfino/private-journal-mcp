@@ -7,7 +7,7 @@ import * as os from 'os';
 
 import { pipeline } from '@xenova/transformers';
 
-import { EmbeddingService } from '../src/embeddings';
+import { EmbeddingService, EMBEDDING_SCHEMA_VERSION } from '../src/embeddings';
 import { SearchService } from '../src/search';
 import { JournalManager } from '../src/journal';
 
@@ -520,5 +520,17 @@ beta insight body`;
 
       expect(calls).toEqual(['query: hello', 'passage: world']);
     });
+  });
+});
+
+describe('EmbeddingService.isCompatible', () => {
+  test('true only for current-model current-version entries', () => {
+    const svc = EmbeddingService.getInstance();
+    const model = svc.getModelName();
+
+    expect(svc.isCompatible({ version: EMBEDDING_SCHEMA_VERSION, model })).toBe(true);
+    expect(svc.isCompatible({ version: EMBEDDING_SCHEMA_VERSION, model: 'other-model' })).toBe(false);
+    expect(svc.isCompatible({})).toBe(false);                              // v1: no version/model
+    expect(svc.isCompatible({ version: 1, model })).toBe(false);           // stale version
   });
 });
