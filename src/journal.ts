@@ -4,7 +4,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { resolveUserJournalPath } from './paths.js';
-import { EmbeddingService, EmbeddingData } from './embeddings.js';
+import { EmbeddingService, EmbeddingData, SectionEmbedding, EMBEDDING_SCHEMA_VERSION } from './embeddings.js';
 
 export class JournalManager {
   private projectJournalPath: string;
@@ -148,47 +148,70 @@ ${sections.join('\n\n')}
 `;
   }
 
+  private async regenerateEmbedding(
+    filePath: string,
+    content: string,
+    timestamp: Date
+  ): Promise<boolean> {
+    const { text, sections, sectionChunks } = this.embeddingService.extractSearchableText(content);
+
+    if (text.trim().length === 0) {
+      // Regen can never rewrite an .embedding for an empty source, so a stale
+      // one would stay foreign forever (re-flagged by every scan, named by the
+      // search skip log). Unrecoverable: delete the orphan (no-op when absent).
+      await fs.rm(filePath.replace(/\.md$/, '.embedding'), { force: true });
+      return false; // nothing to embed; not a success, not an error
+    }
+
+    const embedding = await this.embeddingService.generateEmbedding(text, 'document');
+
+    const sectionEmbeddings: SectionEmbedding[] = [];
+    for (const chunk of sectionChunks) {
+      const emb = await this.embeddingService.generateEmbedding(chunk.body, 'document');
+      sectionEmbeddings.push({ section: chunk.section, text: chunk.body, embedding: emb });
+    }
+
+    const embeddingData: EmbeddingData = {
+      version: EMBEDDING_SCHEMA_VERSION,
+      model: this.embeddingService.getModelName(),
+      embedding,
+      sectionEmbeddings,
+      text,
+      sections,
+      timestamp: timestamp.getTime(),
+      path: filePath,
+    };
+
+    await this.embeddingService.saveEmbedding(filePath, embeddingData);
+    return true;
+  }
+
   private async generateEmbeddingForEntry(
     filePath: string,
     content: string,
     timestamp: Date
   ): Promise<void> {
     try {
-      const { text, sections } = this.embeddingService.extractSearchableText(content);
-      
-      if (text.trim().length === 0) {
-        return; // Skip empty entries
-      }
-
-      const embedding = await this.embeddingService.generateEmbedding(text);
-      
-      const embeddingData: EmbeddingData = {
-        embedding,
-        text,
-        sections,
-        timestamp: timestamp.getTime(),
-        path: filePath
-      };
-
-      await this.embeddingService.saveEmbedding(filePath, embeddingData);
+      await this.regenerateEmbedding(filePath, content, timestamp);
     } catch (error) {
-      console.error(`Failed to generate embedding for ${filePath}:`, error);
       // Don't throw - embedding failure shouldn't prevent journal writing
+      console.error(`Failed to generate embedding for ${filePath}:`, error);
     }
   }
 
   async generateMissingEmbeddings(): Promise<number> {
     let count = 0;
+    let modelReady = false;
     const paths = [this.projectJournalPath, this.userJournalPath];
-    
+
     for (const basePath of paths) {
       try {
         const dayDirs = await fs.readdir(basePath);
-        
+
         for (const dayDir of dayDirs) {
           const dayPath = path.join(basePath, dayDir);
           const stat = await fs.stat(dayPath);
-          
+
           if (!stat.isDirectory() || !dayDir.match(/^\d{4}-\d{2}-\d{2}$/)) {
             continue;
           }
@@ -197,19 +220,58 @@ ${sections.join('\n\n')}
           const mdFiles = files.filter(file => file.endsWith('.md'));
 
           for (const mdFile of mdFiles) {
-            const mdPath = path.join(dayPath, mdFile);
-            const embeddingPath = mdPath.replace(/\.md$/, '.embedding');
-            
             try {
-              await fs.access(embeddingPath);
-              // Embedding already exists, skip
-            } catch {
-              // Generate missing embedding
-              console.error(`Generating missing embedding for ${mdPath}`);
+              const mdPath = path.join(dayPath, mdFile);
+              const embeddingPath = mdPath.replace(/\.md$/, '.embedding');
+
+              let needsRegen = false;
+              try {
+                const raw = await fs.readFile(embeddingPath, 'utf8');
+                const existing = JSON.parse(raw);
+                // Structural check covers the whole-entry vector AND every
+                // section vector; a same-model wrong-length vector is not
+                // detectable here (needs the model's dimension) — accepted.
+                const vectorsOk = Array.isArray(existing.embedding) &&
+                  Array.isArray(existing.sectionEmbeddings) &&
+                  existing.sectionEmbeddings.every(
+                    (se: { embedding?: unknown } | null | undefined) => Array.isArray(se?.embedding)
+                  );
+                if (!this.embeddingService.isCompatible(existing) || !vectorsOk) {
+                  needsRegen = true;
+                }
+              } catch {
+                needsRegen = true; // missing or unreadable
+              }
+
+              if (!needsRegen) {
+                continue;
+              }
+
+              if (!modelReady) {
+                // Generous timeout: the query default (30s) is too short to
+                // download a cold ~465MB model, and transformers.js neither
+                // resumes nor dedupes, so a short retry would only start a
+                // second concurrent download. One long attempt or bust.
+                this.embeddingService.initTimeoutMs = 120_000;
+                try {
+                  await this.embeddingService.initialize();
+                  modelReady = true;
+                } catch (error) {
+                  console.error('embedding model unavailable — aborting re-index:', error);
+                  return count; // abort the whole scan; report real successes so far
+                }
+              }
+
+              console.error(`Generating/refreshing embedding for ${mdPath}`);
               const content = await fs.readFile(mdPath, 'utf8');
               const timestamp = this.extractTimestampFromPath(mdPath) || new Date();
-              await this.generateEmbeddingForEntry(mdPath, content, timestamp);
-              count++;
+              const wrote = await this.regenerateEmbedding(mdPath, content, timestamp);
+              if (wrote) {
+                count++;
+              }
+            } catch (error) {
+              // Per-file isolation: one bad file never aborts the directory.
+              console.error(`Failed to migrate ${mdFile}:`, error);
             }
           }
         }
@@ -219,7 +281,7 @@ ${sections.join('\n\n')}
         }
       }
     }
-    
+
     return count;
   }
 

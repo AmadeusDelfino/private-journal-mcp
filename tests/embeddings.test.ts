@@ -5,7 +5,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
-import { EmbeddingService } from '../src/embeddings';
+import { pipeline } from '@xenova/transformers';
+
+import { EmbeddingService, EMBEDDING_SCHEMA_VERSION } from '../src/embeddings';
 import { SearchService } from '../src/search';
 import { JournalManager } from '../src/journal';
 
@@ -77,6 +79,40 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
     expect(sections).toEqual(['Reflections', 'Technical Insights']);
   });
 
+  test('extractSearchableText returns per-section chunks (headers + bodies)', () => {
+    const md = `---
+title: "x"
+---
+
+## Reflections
+
+alpha reflection body
+
+## Technical Insights
+
+beta insight body`;
+    const { text, sections, sectionChunks } = EmbeddingService.getInstance().extractSearchableText(md);
+    expect(sections).toEqual(['Reflections', 'Technical Insights']);
+    expect(text).toContain('alpha reflection body');
+    expect(sectionChunks).toEqual([
+      { section: 'Reflections', body: 'alpha reflection body' },
+      { section: 'Technical Insights', body: 'beta insight body' },
+    ]);
+  });
+
+  test('extractSearchableText returns empty sectionChunks for content without headers', () => {
+    const { sections, sectionChunks } = EmbeddingService.getInstance().extractSearchableText('just plain text, no headers');
+    expect(sections).toEqual([]);
+    expect(sectionChunks).toEqual([]);
+  });
+
+  test('extractSearchableText excludes empty-body sections from sectionChunks but keeps them in sections', () => {
+    const md = '## Empty Section\n\n\n## Full Section\n\nreal body';
+    const { sections, sectionChunks } = EmbeddingService.getInstance().extractSearchableText(md);
+    expect(sections).toEqual(['Empty Section', 'Full Section']);
+    expect(sectionChunks).toEqual([{ section: 'Full Section', body: 'real body' }]);
+  });
+
   test('cosine similarity calculation works correctly', async () => {
     const embeddingService = EmbeddingService.getInstance();
     
@@ -124,6 +160,56 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
       expect(embeddingData.sections).toContain('Technical Insights');
     }
   }, 60000);
+
+  test('writing an entry stores one embedding per non-empty section', async () => {
+    await journalManager.writeThoughts({
+      reflections: 'reflection body',
+      technical_insights: 'insight body',
+    });
+    // find the .embedding file under the user temp dir
+    const userRoot = path.join(userTempDir, '.private-journal');
+    const day = (await fs.readdir(userRoot)).find(d => /^\d{4}-\d{2}-\d{2}$/.test(d))!;
+    const embFile = (await fs.readdir(path.join(userRoot, day))).find(f => f.endsWith('.embedding'))!;
+    const data = JSON.parse(await fs.readFile(path.join(userRoot, day, embFile), 'utf8'));
+
+    expect(data.version).toBe(2);
+    expect(typeof data.model).toBe('string');
+    expect(data.sectionEmbeddings.map((s: any) => s.section)).toEqual(['Reflections', 'Technical Insights']);
+    expect(Array.isArray(data.sectionEmbeddings[0].embedding)).toBe(true);
+    expect(Array.isArray(data.embedding)).toBe(true);
+  });
+
+  test('regenerates embeddings whose model/version is stale', async () => {
+    await journalManager.writeThoughts({ observations: 'obs body' });
+    const userRoot = path.join(userTempDir, '.private-journal');
+    const day = (await fs.readdir(userRoot)).find(d => /^\d{4}-\d{2}-\d{2}$/.test(d))!;
+    const embPath = path.join(userRoot, day, (await fs.readdir(path.join(userRoot, day))).find(f => f.endsWith('.embedding'))!);
+
+    // Simulate an old-format file (v1: no version/model/sectionEmbeddings)
+    await fs.writeFile(embPath, JSON.stringify({ embedding: [0, 0, 0], text: 'obs body', sections: ['Observations'], timestamp: Date.now(), path: embPath.replace('.embedding', '.md') }), 'utf8');
+
+    const count = await journalManager.generateMissingEmbeddings();
+    expect(count).toBe(1);
+    expect(jest.mocked(console.error))
+      .toHaveBeenCalledWith(expect.stringContaining('Generating/refreshing embedding for'));
+    const migrated = JSON.parse(await fs.readFile(embPath, 'utf8'));
+    expect(migrated.version).toBe(2);
+    expect(migrated.sectionEmbeddings.length).toBeGreaterThan(0);
+  });
+
+  test('does not regenerate embeddings that are current', async () => {
+    await journalManager.writeThoughts({ observations: 'obs body' });
+    const userRoot = path.join(userTempDir, '.private-journal');
+    const day = (await fs.readdir(userRoot)).find(d => /^\d{4}-\d{2}-\d{2}$/.test(d))!;
+    const embPath = path.join(userRoot, day, (await fs.readdir(path.join(userRoot, day))).find(f => f.endsWith('.embedding'))!);
+    const before = await fs.readFile(embPath, 'utf8');
+
+    const count = await journalManager.generateMissingEmbeddings();
+
+    expect(count).toBe(0);
+    const after = await fs.readFile(embPath, 'utf8');
+    expect(after).toBe(before);
+  });
 
   test('search service finds semantically similar entries', async () => {
     // Write some test entries
@@ -347,6 +433,8 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
 
       await expect(service.generateEmbedding('test'))
         .rejects.toThrow(/timed out/i);
+      expect(jest.mocked(console.error))
+        .toHaveBeenCalledWith('Failed to load embedding model:', expect.any(Error));
     });
 
     test('can retry after timeout', async () => {
@@ -360,6 +448,8 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
 
       await expect(service.generateEmbedding('test'))
         .rejects.toThrow(/timed out/i);
+      expect(jest.mocked(console.error))
+        .toHaveBeenCalledWith('Failed to load embedding model:', expect.any(Error));
 
       // Second call: succeed
       transformers.pipeline = originalPipelineMock;
@@ -369,5 +459,222 @@ TypeScript interfaces are really powerful for maintaining code quality.`;
       expect(Array.isArray(embedding)).toBe(true);
       expect(embedding.length).toBeGreaterThan(0);
     });
+  });
+
+  describe('embedding model configuration', () => {
+    const ENV_KEYS = [
+      'PRIVATE_JOURNAL_EMBED_MODEL',
+      'PRIVATE_JOURNAL_EMBED_QUANTIZED',
+      'PRIVATE_JOURNAL_EMBED_QUERY_PREFIX',
+      'PRIVATE_JOURNAL_EMBED_DOC_PREFIX',
+    ];
+    let saved: Record<string, string | undefined>;
+
+    beforeEach(() => {
+      saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+      ENV_KEYS.forEach(k => delete process.env[k]);
+      (pipeline as jest.Mock).mockClear();
+      EmbeddingService.resetInstance();
+    });
+
+    afterEach(() => {
+      ENV_KEYS.forEach(k => { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]!; });
+      EmbeddingService.resetInstance();
+    });
+
+    test('defaults to the multilingual model, full precision', async () => {
+      await EmbeddingService.getInstance().generateEmbedding('hi');
+      expect(pipeline).toHaveBeenCalledWith(
+        'feature-extraction',
+        'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
+        { quantized: false }
+      );
+    });
+
+    test('honors PRIVATE_JOURNAL_EMBED_MODEL and PRIVATE_JOURNAL_EMBED_QUANTIZED', async () => {
+      process.env.PRIVATE_JOURNAL_EMBED_MODEL = 'Xenova/multilingual-e5-base';
+      process.env.PRIVATE_JOURNAL_EMBED_QUANTIZED = 'true';
+      EmbeddingService.resetInstance();
+      await EmbeddingService.getInstance().generateEmbedding('hi');
+      expect(pipeline).toHaveBeenCalledWith(
+        'feature-extraction',
+        'Xenova/multilingual-e5-base',
+        { quantized: true }
+      );
+    });
+
+    test('applies query/document prefixes from env', async () => {
+      process.env.PRIVATE_JOURNAL_EMBED_QUERY_PREFIX = 'query: ';
+      process.env.PRIVATE_JOURNAL_EMBED_DOC_PREFIX = 'passage: ';
+      EmbeddingService.resetInstance();
+
+      // Capture the text passed to the extractor
+      const calls: string[] = [];
+      (pipeline as jest.Mock).mockResolvedValueOnce(
+        jest.fn(async (text: string) => { calls.push(text); return { data: new Float32Array([0.1, 0.2, 0.3]) }; })
+      );
+
+      const svc = EmbeddingService.getInstance();
+      await svc.generateEmbedding('hello', 'query');
+      await svc.generateEmbedding('world', 'document');
+
+      expect(calls).toEqual(['query: hello', 'passage: world']);
+    });
+  });
+
+  describe('generateMissingEmbeddings hardening', () => {
+    const staleEmbedding = (mdPath: string) => JSON.stringify({
+      version: 1, model: 'old-model', embedding: [0, 0, 0],
+      text: 'x', sections: ['X'], timestamp: Date.now(), path: mdPath,
+    });
+
+    const writeStale = async (name: string, body: string) => {
+      const day = path.join(projectTempDir, '2026-07-08');
+      await fs.mkdir(day, { recursive: true });
+      const mdPath = path.join(day, `${name}.md`);
+      await fs.writeFile(mdPath, `## X\n\n${body}`, 'utf8');
+      await fs.writeFile(path.join(day, `${name}.embedding`), staleEmbedding(mdPath), 'utf8');
+      return mdPath;
+    };
+
+    afterEach(() => { EmbeddingService.resetInstance(); });
+
+    test('one entry failing to regen does not stop the others; count is only successes', async () => {
+      await writeStale('good', 'good body');
+      await writeStale('boom', 'boom body');
+
+      const svc = EmbeddingService.getInstance();
+      jest.spyOn(svc, 'generateEmbedding').mockImplementation(async (text: string) => {
+        if (text.includes('boom')) throw new Error('inference failed');
+        return [0.1, 0.2, 0.3, 0.4, 0.5];
+      });
+
+      const count = await journalManager.generateMissingEmbeddings();
+
+      expect(count).toBe(1); // only 'good' migrated
+      const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+      expect(errorCalls.filter(m => m.startsWith('Failed to migrate'))).toHaveLength(1);
+      const goodEmb = JSON.parse(await fs.readFile(
+        path.join(projectTempDir, '2026-07-08', 'good.embedding'), 'utf8'));
+      expect(goodEmb.version).toBe(2);
+      expect(goodEmb.model).toBe(svc.getModelName());
+    });
+
+    test('an unreadable .md isolates to that file; the rest still migrate (Goal 4)', async () => {
+      const boomMd = await writeStale('boom', 'boom body');
+      await writeStale('good', 'good body');
+
+      // Spy on the raw required module, not the local namespace-import binding
+      // (`fs` above): TS's __importStar wraps `import * as fs from 'fs/promises'`
+      // in a non-configurable getter, so jest.spyOn(fs, 'readFile') throws
+      // "Cannot redefine property". The raw module's own property is a normal
+      // configurable/writable slot, and every file's namespace-import getter
+      // reads it live — so patching it here also intercepts journal.ts's calls.
+      const fsPromises = require('fs/promises');
+      const realReadFile = jest.requireActual('fs/promises').readFile;
+      const readSpy = jest.spyOn(fsPromises, 'readFile').mockImplementation(((p: any, ...a: any[]) =>
+        String(p) === boomMd
+          ? Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+          : realReadFile(p, ...a)) as any);
+
+      try {
+        const count = await journalManager.generateMissingEmbeddings();
+        expect(count).toBe(1); // 'good' migrated despite 'boom.md' being unreadable
+        const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+        expect(errorCalls.filter(m => m.startsWith('Failed to migrate'))).toHaveLength(1);
+      } finally {
+        // jest.config.cjs sets no restoreMocks — restore by hand or the spy
+        // leaks into every later test in this file.
+        readSpy.mockRestore();
+      }
+    });
+
+    test('empty-text entry is not counted, writes no .embedding, and its stale orphan is deleted', async () => {
+      const day = path.join(projectTempDir, '2026-07-08');
+      await fs.mkdir(day, { recursive: true });
+      await fs.writeFile(path.join(day, 'empty.md'), '   \n', 'utf8'); // no sections, blank body
+      await fs.writeFile(path.join(day, 'empty.embedding'),
+        staleEmbedding(path.join(day, 'empty.md')), 'utf8');
+
+      const count = await journalManager.generateMissingEmbeddings();
+
+      expect(count).toBe(0);
+      const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+      expect(errorCalls.filter(m => m.startsWith('Failed to migrate'))).toHaveLength(0); // empty source is not an error
+      // Regen can never rewrite an .embedding for an empty source, so a stale
+      // one would be re-flagged and search-skip-logged forever. The scan
+      // deletes the orphan (unrecoverable state — decided 2026-07-13).
+      await expect(fs.access(path.join(day, 'empty.embedding')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    test('current-model file with a corrupt vector (whole-entry or section) is regenerated', async () => {
+      const writeCorrupt = async (name: string, vectors: { embedding: unknown; sectionEmbeddings: unknown }) => {
+        const day = path.join(projectTempDir, '2026-07-08');
+        await fs.mkdir(day, { recursive: true });
+        const mdPath = path.join(day, `${name}.md`);
+        await fs.writeFile(mdPath, `## X\n\n${name} body`, 'utf8');
+        await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
+          version: EMBEDDING_SCHEMA_VERSION, model: EmbeddingService.getInstance().getModelName(),
+          text: 'x', sections: ['X'], timestamp: Date.now(), path: mdPath,
+          ...vectors,
+        }), 'utf8');
+      };
+      await writeCorrupt('corrupt-whole', {
+        embedding: null, // structurally corrupt whole-entry vector
+        sectionEmbeddings: [{ section: 'X', text: 'x', embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }],
+      });
+      await writeCorrupt('corrupt-section', {
+        embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
+        sectionEmbeddings: [{ section: 'X', text: 'x', embedding: null }], // corrupt section vector
+      });
+
+      const count = await journalManager.generateMissingEmbeddings();
+
+      expect(count).toBe(2); // both healed, honestly counted
+      for (const name of ['corrupt-whole', 'corrupt-section']) {
+        const healed = JSON.parse(await fs.readFile(
+          path.join(projectTempDir, '2026-07-08', `${name}.embedding`), 'utf8'));
+        expect(Array.isArray(healed.embedding)).toBe(true);
+        expect(healed.sectionEmbeddings.every((se: any) => Array.isArray(se.embedding))).toBe(true);
+      }
+    });
+
+    test('model init failure aborts with one scan-level log, no per-file spam, partial count', async () => {
+      // Relies on the OUTER beforeEach recreating journalManager per test:
+      // after the previous test's resetInstance(), it captures a fresh,
+      // UNinitialized singleton. Converting that beforeEach to beforeAll
+      // breaks this test (the captured instance would already be initialized).
+      await writeStale('a', 'a body');
+      await writeStale('b', 'b body');
+
+      EmbeddingService.resetInstance();
+      const transformers = require('@xenova/transformers');
+      const savedPipeline = transformers.pipeline;
+      transformers.pipeline = jest.fn().mockRejectedValue(new Error('offline'));
+
+      try {
+        const count = await journalManager.generateMissingEmbeddings();
+        expect(count).toBe(0); // aborted before any write
+
+        const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+        expect(errorCalls.filter(m => m.includes('aborting re-index'))).toHaveLength(1);
+        expect(errorCalls.some(m => m.startsWith('Failed to migrate'))).toBe(false);
+      } finally {
+        transformers.pipeline = savedPipeline;
+      }
+    });
+  });
+});
+
+describe('EmbeddingService.isCompatible', () => {
+  test('true only for current-model current-version entries', () => {
+    const svc = EmbeddingService.getInstance();
+    const model = svc.getModelName();
+
+    expect(svc.isCompatible({ version: EMBEDDING_SCHEMA_VERSION, model })).toBe(true);
+    expect(svc.isCompatible({ version: EMBEDDING_SCHEMA_VERSION, model: 'other-model' })).toBe(false);
+    expect(svc.isCompatible({})).toBe(false);                              // v1: no version/model
+    expect(svc.isCompatible({ version: 1, model })).toBe(false);           // stale version
   });
 });

@@ -6,6 +6,8 @@ import * as path from 'path';
 import { EmbeddingService, EmbeddingData } from './embeddings.js';
 import { resolveUserJournalPath, resolveProjectJournalPath } from './paths.js';
 
+type LoadedEmbedding = EmbeddingData & { type: 'project' | 'user'; diskPath: string };
+
 export interface SearchResult {
   path: string;
   score: number;
@@ -14,6 +16,7 @@ export interface SearchResult {
   timestamp: number;
   excerpt: string;
   type: 'project' | 'user';
+  matchedSection?: string;
 }
 
 export interface RecentEntryResult {
@@ -56,20 +59,10 @@ export class SearchService {
     } = options;
 
     // Generate query embedding
-    const queryEmbedding = await this.embeddingService.generateEmbedding(query);
+    const queryEmbedding = await this.embeddingService.generateEmbedding(query, 'query');
 
     // Collect all embeddings
-    const allEmbeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
-
-    if (type === 'both' || type === 'project') {
-      const projectEmbeddings = await this.loadEmbeddingsFromPath(this.projectPath, 'project');
-      allEmbeddings.push(...projectEmbeddings);
-    }
-
-    if (type === 'both' || type === 'user') {
-      const userEmbeddings = await this.loadEmbeddingsFromPath(this.userPath, 'user');
-      allEmbeddings.push(...userEmbeddings);
-    }
+    const allEmbeddings = await this.collectEmbeddings(type);
 
     // Filter by criteria
     const filtered = allEmbeddings.filter(embedding => {
@@ -93,12 +86,25 @@ export class SearchService {
       return true;
     });
 
-    // Calculate similarities and sort
-    const results: SearchResult[] = filtered
+    // Only score entries we can attest came from the current model. Foreign /
+    // v1 rows are skipped (read-only: healing is the migration's job) and
+    // surfaced once, naming their on-disk paths.
+    const scorable = filtered.filter(e => this.embeddingService.isCompatible(e));
+    const foreign = filtered.filter(e => !this.embeddingService.isCompatible(e));
+
+    if (foreign.length > 0) {
+      const sample = foreign.slice(0, 3).map(e => e.diskPath).join(', ');
+      console.error(
+        `search_journal: skipped ${foreign.length} ` +
+        `entr${foreign.length === 1 ? 'y' : 'ies'} (incompatible embedding model); ` +
+        `run a re-index. Examples: ${sample}`
+      );
+    }
+
+    const results: SearchResult[] = scorable
       .map(embedding => {
-        const score = this.embeddingService.cosineSimilarity(queryEmbedding, embedding.embedding);
+        const { score, matchedSection } = this.scoreEntry(queryEmbedding, embedding);
         const excerpt = this.generateExcerpt(embedding.text, query);
-        
         return {
           path: embedding.path,
           score,
@@ -106,7 +112,8 @@ export class SearchService {
           sections: embedding.sections,
           timestamp: embedding.timestamp,
           excerpt,
-          type: embedding.type
+          type: embedding.type,
+          matchedSection,
         };
       })
       .filter(result => result.score >= minScore)
@@ -116,6 +123,28 @@ export class SearchService {
     return results;
   }
 
+  private scoreEntry(
+    queryEmbedding: number[],
+    entry: EmbeddingData
+  ): { score: number; matchedSection?: string } {
+    const dimOk = (v: unknown): v is number[] =>
+      Array.isArray(v) && v.length === queryEmbedding.length;
+
+    if (Array.isArray(entry.sectionEmbeddings) && entry.sectionEmbeddings.length > 0) {
+      let best = -Infinity;
+      let matchedSection: string | undefined;
+      for (const se of entry.sectionEmbeddings) {
+        if (!se || !dimOk(se.embedding)) continue; // corruption backstop: skip, never throw
+        const s = this.embeddingService.cosineSimilarity(queryEmbedding, se.embedding);
+        if (s > best) { best = s; matchedSection = se.section; }
+      }
+      return { score: best, matchedSection };
+    }
+    // Legacy fallback: whole-entry vector
+    if (!dimOk(entry.embedding)) return { score: -Infinity };
+    return { score: this.embeddingService.cosineSimilarity(queryEmbedding, entry.embedding) };
+  }
+
   async listRecent(options: SearchOptions = {}): Promise<SearchResult[]> {
     const {
       limit = 10,
@@ -123,17 +152,7 @@ export class SearchService {
       dateRange
     } = options;
 
-    const allEmbeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
-
-    if (type === 'both' || type === 'project') {
-      const projectEmbeddings = await this.loadEmbeddingsFromPath(this.projectPath, 'project');
-      allEmbeddings.push(...projectEmbeddings);
-    }
-
-    if (type === 'both' || type === 'user') {
-      const userEmbeddings = await this.loadEmbeddingsFromPath(this.userPath, 'user');
-      allEmbeddings.push(...userEmbeddings);
-    }
+    const allEmbeddings = await this.collectEmbeddings(type);
 
     // Filter by date range
     const filtered = dateRange ? allEmbeddings.filter(embedding => {
@@ -242,11 +261,35 @@ export class SearchService {
     );
   }
 
+  // Collect embeddings honoring the type filter. When both journal roots resolve
+  // to the same physical directory (e.g. PRIVATE_JOURNAL_PATH is set, or CWD ===
+  // HOME), scanning both would return every entry twice — halving the effective
+  // limit and surfacing each hit side by side. In that case scan once, labeling
+  // by the requested type (both/user -> 'user', since PRIVATE_JOURNAL_PATH is the
+  // personal journal).
+  private async collectEmbeddings(
+    type: 'project' | 'user' | 'both'
+  ): Promise<LoadedEmbedding[]> {
+    if (path.resolve(this.projectPath) === path.resolve(this.userPath)) {
+      const label = type === 'project' ? 'project' : 'user';
+      return this.loadEmbeddingsFromPath(this.projectPath, label);
+    }
+
+    const embeddings: LoadedEmbedding[] = [];
+    if (type === 'both' || type === 'project') {
+      embeddings.push(...await this.loadEmbeddingsFromPath(this.projectPath, 'project'));
+    }
+    if (type === 'both' || type === 'user') {
+      embeddings.push(...await this.loadEmbeddingsFromPath(this.userPath, 'user'));
+    }
+    return embeddings;
+  }
+
   private async loadEmbeddingsFromPath(
-    basePath: string, 
+    basePath: string,
     type: 'project' | 'user'
-  ): Promise<Array<EmbeddingData & { type: 'project' | 'user' }>> {
-    const embeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
+  ): Promise<LoadedEmbedding[]> {
+    const embeddings: LoadedEmbedding[] = [];
 
     try {
       const dayDirs = await fs.readdir(basePath);
@@ -267,7 +310,7 @@ export class SearchService {
             const embeddingPath = path.join(dayPath, embeddingFile);
             const content = await fs.readFile(embeddingPath, 'utf8');
             const embeddingData = JSON.parse(content);
-            embeddings.push({ ...embeddingData, type });
+            embeddings.push({ ...embeddingData, type, diskPath: embeddingPath });
           } catch (error) {
             console.error(`Failed to load embedding ${embeddingFile}:`, error);
             // Continue with other files

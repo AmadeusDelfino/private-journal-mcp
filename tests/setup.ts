@@ -7,3 +7,15 @@ jest.mock('@xenova/transformers', () => ({
     })
   ),
 }));
+
+// The embedding service and journal scanner log progress and errors to stderr
+// (stdout is reserved for the MCP stdio protocol). Suppress that here so the
+// suite output stays pristine; tests that intentionally exercise a log path
+// assert against this spy explicitly via `jest.mocked(console.error)`.
+beforeEach(() => {
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  jest.mocked(console.error).mockRestore();
+});

@@ -4,8 +4,19 @@
 import { pipeline, FeatureExtractionPipeline } from '@xenova/transformers';
 import * as fs from 'fs/promises';
 
-export interface EmbeddingData {
+export const EMBEDDING_SCHEMA_VERSION = 2;
+
+export interface SectionEmbedding {
+  section: string;
+  text: string;
   embedding: number[];
+}
+
+export interface EmbeddingData {
+  version: number;                       // EMBEDDING_SCHEMA_VERSION
+  model: string;                         // model that produced these vectors
+  embedding: number[];                   // whole-entry vector (legacy/fallback)
+  sectionEmbeddings: SectionEmbedding[];
   text: string;
   sections: string[];
   timestamp: number;
@@ -15,7 +26,11 @@ export interface EmbeddingData {
 export class EmbeddingService {
   private static instance: EmbeddingService;
   private extractor: FeatureExtractionPipeline | null = null;
-  private readonly modelName = 'Xenova/all-MiniLM-L6-v2';
+  private readonly modelName =
+    process.env.PRIVATE_JOURNAL_EMBED_MODEL || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
+  private readonly quantized = process.env.PRIVATE_JOURNAL_EMBED_QUANTIZED === 'true'; // default: false
+  private readonly queryPrefix = process.env.PRIVATE_JOURNAL_EMBED_QUERY_PREFIX ?? '';
+  private readonly docPrefix = process.env.PRIVATE_JOURNAL_EMBED_DOC_PREFIX ?? '';
   private initPromise: Promise<void> | null = null;
   initTimeoutMs = 30_000;
 
@@ -30,6 +45,14 @@ export class EmbeddingService {
 
   static resetInstance(): void {
     EmbeddingService.instance = undefined as unknown as EmbeddingService;
+  }
+
+  getModelName(): string {
+    return this.modelName;
+  }
+
+  isCompatible(entry: { version?: number; model?: string }): boolean {
+    return entry.version === EMBEDDING_SCHEMA_VERSION && entry.model === this.modelName;
   }
 
   async initialize(): Promise<void> {
@@ -53,7 +76,7 @@ export class EmbeddingService {
     try {
       console.error('Loading embedding model...');
       this.extractor = await Promise.race([
-        pipeline('feature-extraction', this.modelName),
+        pipeline('feature-extraction', this.modelName, { quantized: this.quantized }),
         timeoutPromise,
       ]);
       console.error('Embedding model loaded successfully');
@@ -66,7 +89,7 @@ export class EmbeddingService {
     }
   }
 
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[]> {
     if (!this.extractor) {
       await this.initialize();
     }
@@ -75,8 +98,11 @@ export class EmbeddingService {
       throw new Error('Embedding model not initialized');
     }
 
+    const prefix = kind === 'query' ? this.queryPrefix : this.docPrefix;
+    const input = prefix ? prefix + text : text;
+
     try {
-      const result = await this.extractor(text, { pooling: 'mean', normalize: true });
+      const result = await this.extractor(input, { pooling: 'mean', normalize: true });
       return Array.from(result.data);
     } catch (error) {
       console.error('Failed to generate embedding:', error);
@@ -125,26 +151,35 @@ export class EmbeddingService {
     }
   }
 
-  extractSearchableText(markdownContent: string): { text: string; sections: string[] } {
-    // Remove YAML frontmatter
+  extractSearchableText(markdownContent: string): {
+    text: string;
+    sections: string[];
+    sectionChunks: { section: string; body: string }[];
+  } {
     const withoutFrontmatter = markdownContent.replace(/^---\n.*?\n---\n/s, '');
-    
-    // Extract sections
+
     const sections: string[] = [];
     const sectionMatches = withoutFrontmatter.match(/^## (.+)$/gm);
     if (sectionMatches) {
       sections.push(...sectionMatches.map(match => match.replace('## ', '')));
     }
 
-    // Clean up markdown for embedding
+    // Split into (header, body) chunks
+    const sectionChunks: { section: string; body: string }[] = [];
+    const parts = withoutFrontmatter.split(/^## (.+)$/gm); // [pre, name1, body1, name2, body2, ...]
+    for (let i = 1; i < parts.length; i += 2) {
+      const section = parts[i].trim();
+      const body = (parts[i + 1] ?? '').replace(/\n{3,}/g, '\n\n').trim();
+      if (body.length > 0) {
+        sectionChunks.push({ section, body });
+      }
+    }
+
     const cleanText = withoutFrontmatter
-      .replace(/^## .+$/gm, '') // Remove section headers
-      .replace(/\n{3,}/g, '\n\n') // Normalize whitespace
+      .replace(/^## .+$/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
 
-    return {
-      text: cleanText,
-      sections
-    };
+    return { text: cleanText, sections, sectionChunks };
   }
 }
