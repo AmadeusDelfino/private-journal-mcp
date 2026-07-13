@@ -129,7 +129,7 @@ export class SearchService {
       let best = -Infinity;
       let matchedSection: string | undefined;
       for (const se of entry.sectionEmbeddings) {
-        if (!dimOk(se.embedding)) continue; // corruption backstop: skip, never throw
+        if (!se || !dimOk(se.embedding)) continue; // corruption backstop: skip, never throw
         const s = this.embeddingService.cosineSimilarity(queryEmbedding, se.embedding);
         if (s > best) { best = s; matchedSection = se.section; }
       }

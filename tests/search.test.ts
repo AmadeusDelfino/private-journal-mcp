@@ -75,7 +75,7 @@ describe('dimension floor (crash safety)', () => {
     await fs.writeFile(path.join(day, `${name}.md`), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
       version: 2, model, embedding, sectionEmbeddings,
-      text: 'body', sections: sectionEmbeddings.map((s: any) => s.section),
+      text: 'body', sections: sectionEmbeddings.map((s: any) => s?.section),
       timestamp: Date.now(), path: path.join(day, `${name}.md`),
     }), 'utf8');
   };
@@ -97,6 +97,41 @@ describe('dimension floor (crash safety)', () => {
 
   test('a null/missing vector does not throw inside the guard', async () => {
     await writeEntry('nullvec', [{ section: 'C', text: 'c', embedding: null }]);
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    await expect(svc.search('anything', { type: 'project', minScore: -1 })).resolves.toEqual([]);
+  });
+
+  test('a null section entry is skipped, the good section still scores', async () => {
+    await writeEntry('nullsec', [null, { section: 'A', text: 'a', embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }]);
+
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    const results = await svc.search('anything', { type: 'project', minScore: -1 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].path).toContain('nullsec.md');
+    expect(results[0].matchedSection).toBe('A');
+  });
+
+  test('entries with a bad whole-entry vector and no sections are excluded, no throw', async () => {
+    // No sectionEmbeddings key at all → legacy fallback branch; version/model current
+    // so Task 3's model ceiling won't be what excludes them.
+    const day = path.join(dir, '2026-07-08');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(path.join(day, 'wrongdim.md'), '## X\n\nbody', 'utf8');
+    await fs.writeFile(path.join(day, 'wrongdim.embedding'), JSON.stringify({
+      version: 2, model,
+      embedding: [1, 2, 3], // 3-dim vs 5-dim query → floor excludes
+      text: 'body', sections: ['X'],
+      timestamp: Date.now(), path: path.join(day, 'wrongdim.md'),
+    }), 'utf8');
+    await fs.writeFile(path.join(day, 'nullwhole.md'), '## X\n\nbody', 'utf8');
+    await fs.writeFile(path.join(day, 'nullwhole.embedding'), JSON.stringify({
+      version: 2, model,
+      embedding: null,
+      text: 'body', sections: ['X'],
+      timestamp: Date.now(), path: path.join(day, 'nullwhole.md'),
+    }), 'utf8');
+
     const svc = new SearchService(dir, path.join(dir, 'no-user'));
     await expect(svc.search('anything', { type: 'project', minScore: -1 })).resolves.toEqual([]);
   });
