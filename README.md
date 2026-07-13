@@ -141,6 +141,30 @@ Browse recent entries chronologically:
 - **type**: Entry scope - 'project', 'user', or 'both' (default: 'both')
 - **days**: Days back to search (default: 30)
 
+### `read_recent_entries`
+Read the full content of your most recent journal entries:
+- **limit**: Number of recent entries to read (default: 5)
+- **type**: Entry scope - 'project', 'user', or 'both' (default: 'both')
+
+### `find_recurring_themes`
+Detect themes that recur across entries by clustering their section embeddings (read-only, fully offline):
+- **days**: Look-back window in days, 0 = all-time (default: 30)
+- **minEntries**: Distinct entries a theme needs to qualify (default: 5)
+- **minDays**: Distinct days a theme must span (default: 2)
+- **threshold**: Cosine similarity cutoff for clustering (default: 0.7)
+- **sections**: Restrict to specific categories
+- **type**: Scan scope - 'project', 'user', or 'both' (default: 'both')
+- **limit**: Maximum themes returned (default: 20)
+- **preview**: Statistics only, for sweeping thresholds (default: false)
+
+Dream entries (see `record_dream`) are excluded from the scanned corpus.
+
+### `record_dream`
+Record a consolidation entry ("dream") written after reviewing recurring themes:
+- **content** (required): The dream narrative in markdown
+
+Dream entries live in the user journal and are searchable like any other entry, but they never feed `find_recurring_themes` — preventing feedback loops.
+
 ## File Structure
 
 ### Project Journal (per project)
@@ -193,6 +217,31 @@ npm run build
 ```bash
 npm test
 ```
+
+### Recalibrating the recurrence threshold
+
+`find_recurring_themes` clusters section embeddings with a cosine cutoff τ
+(`DEFAULT_THRESHOLD` in `src/recurrence.ts`, currently 0.7 — calibrated
+2026-07-13 against a ~24-entry corpus). The right value depends on the
+embedding model and drifts as the journal grows, so recalibrate when themes
+start looking too broad (one mega-cluster) or too narrow (only
+near-duplicates qualify):
+
+```bash
+npm run build
+npm run calibrate                # sweep τ 0.50–0.85 + themes at the current default
+npm run calibrate -- 0.65       # re-render themes at a candidate τ
+PRIVATE_JOURNAL_PATH=~/.private_journal npm run calibrate   # explicit journal location
+```
+
+The script is read-only and offline (no model load, nothing written). Pick
+the τ where the printed themes are semantically coherent — excerpts within a
+theme visibly about the same thing, unrelated topics not sharing a cluster —
+then update `DEFAULT_THRESHOLD` in `src/recurrence.ts` and the default
+documented in this README's `find_recurring_themes` section. Tests reference
+the constant by import, so no test changes are needed. The `preview: true`
+parameter of `find_recurring_themes` offers the same statistics through the
+MCP tool itself for a quick in-session check.
 
 ### Development Mode
 
