@@ -195,7 +195,8 @@ scorable (`isCompatible`) vs foreign before the `.map` that scores:
   each comparison. A vector that fails the floor is excluded from that
   entry's scoring; if it leaves the entry with no scorable vector, the
   entry is excluded from results. Floor-skips are corruption, a distinct
-  and self-healing class (the scan regenerates them, Component 2), so they
+  class the scan heals where detectable (structural damage — Component 2;
+  same-model wrong-length vectors are an accepted residual), so they
   are **not** added to the foreign-model skip count/log.
 
 `scoreEntry` keeps its two branches for scorable (current-model) entries:
@@ -256,12 +257,31 @@ Rework (decision B, corrected):
   for N entries" is honest. An empty-text entry (`journal.ts:159-161`
   returns without writing) is neither counted nor an error — otherwise it
   inflates the count and re-logs on every boot.
+- **Delete the orphan `.embedding` of an empty source** (decided
+  2026-07-13: unrecoverable state). Regen can never rewrite an
+  `.embedding` whose `.md` has no embeddable text, so a stale one would
+  stay foreign forever — re-flagged by every scan and named by the search
+  skip log with a "run a re-index" hint that cannot heal it. The regen
+  path removes the file instead (`force`: a no-op when absent). The write
+  path shares the code, harmlessly: a fresh write has no pre-existing
+  `.embedding`, so the delete is a no-op there (an all-empty-string
+  `writeThoughts` call *can* produce an empty `.md` — `hasUserContent`
+  only checks `!== undefined`). Residual, accepted: the empty `.md` itself is
+  still re-flagged on every boot (one "Generating/refreshing" line and a
+  model init) because staleness is decided before the text is extracted.
 - **Heal structurally-corrupt vectors.** The scan's `needsRegen` becomes
-  `!isCompatible(existing) || !Array.isArray(existing.embedding)`. A file
-  that is version+model-compatible but carries a `null`/missing/non-array
-  vector (parseable JSON, bad body) is regenerated rather than left for
-  the search floor to skip forever. (Truncated/invalid JSON already
-  triggers regen via the parse-failure path, `journal.ts:220-221`.)
+  `!isCompatible(existing) || !vectorsOk(existing)`, where `vectorsOk`
+  requires the whole-entry `embedding` to be an array **and**
+  `sectionEmbeddings` to be an array whose every entry carries an array
+  vector. A file that is version+model-compatible but carries a
+  `null`/missing/non-array vector — whole-entry or per-section — is
+  regenerated rather than left for the search floor to skip forever.
+  (Truncated/invalid JSON already triggers regen via the parse-failure
+  path, `journal.ts:220-221`.) Residual, accepted: a same-model
+  **wrong-length** vector is not detectable here — the expected dimension
+  is a property of the loaded model — so the search floor excludes it but
+  the scan cannot heal it; reaching that state requires hand-edited or
+  cross-stamped files.
 - **Explicit model init with a longer timeout**, lazily on the first
   entry that needs regen (preserves "nothing to migrate → never load the
   465MB model"). The scan uses a generous init timeout (e.g. 120s)
@@ -305,7 +325,9 @@ Rework (decision B, corrected):
 |---|---|
 | Foreign-model v2 vector at search | Skipped from ranking; counted; on-disk path sampled in one log line |
 | v1 vector at search | Skipped from ranking (fails `isCompatible` — no version/model) |
-| Same-model corrupt vector (`null`/missing/wrong-length) | Floor (`Array.isArray` + length) excludes it from results (not in foreign count); scan regenerates it → self-heals |
+| Same-model `null`/missing/non-array vector (whole-entry or section) | Floor (`Array.isArray` + length) excludes it from results (not in foreign count); scan regenerates the file → self-heals |
+| Same-model wrong-length vector | Floor excludes it at search; scan cannot detect it (needs the model's dimension) — accepted residual |
+| Stale `.embedding` whose `.md` has no embeddable text | Scan deletes the orphan (unrecoverable state); not counted, not an error |
 | All in-scope entries foreign | Empty results + the skip log; recall degraded until re-index (partial if only some are stale) |
 | One entry fails to regen in scan | Logged once; scan continues; count not incremented |
 | Model init fails during scan (single generous-timeout attempt) | One scan-level log; scan aborts by returning the partial count (no throw); un-migrated entries invisible until restart |
@@ -358,7 +380,9 @@ Robust migration:
   day-dirs/entries in that journal still migrate — proves the per-file
   catch wraps the `.md` read, not just the regen (Goal 4).
 - Empty-text entry: not counted, not logged as an error, no `.embedding`
-  written.
+  written — and its stale orphan `.embedding` is deleted.
+- Current-model file with a structurally-corrupt vector (`null`
+  whole-entry; `null` inside a section entry): regenerated and counted.
 - Model init fails (single generous-timeout attempt): exactly **one**
   scan-level abort log and **zero** per-entry failure logs (the assertion
   must be scoped this way — each init attempt itself logs

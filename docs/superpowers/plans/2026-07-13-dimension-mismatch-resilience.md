@@ -4,7 +4,7 @@
 
 **Goal:** Make `search_journal` never crash on (and never silently use) an embedding vector produced by a different model, and harden the startup migration so it heals reliably.
 
-**Architecture:** One shared compatibility predicate (`version` + `model`) gates scoring; a dimension floor is a corruption backstop; the startup scan gets an observable (throwing) regen path, a truthful success count, per-file isolation, and a generous init timeout. Search stays read-only; healing is the migration's job.
+**Architecture:** One shared compatibility predicate (`version` + `model`) gates scoring; a dimension floor is a corruption backstop; the startup scan gets an observable (throwing) regen path, a truthful success count, per-file isolation, a generous init timeout, and deletes the orphan `.embedding` of an empty source. Search stays read-only; healing is the migration's job.
 
 **Tech Stack:** TypeScript (CommonJS via ts-jest), Node `fs/promises`, `@xenova/transformers` (mocked in tests via `tests/setup.ts`), Jest.
 
@@ -19,6 +19,7 @@
 - **Test output stays pristine.** Every expected `console.error` is asserted via the global spy in `tests/setup.ts` (`jest.mocked(console.error)`); no leaked log blocks (convention from commit `0ee7bbe`).
 - **TDD throughout** — write the failing test, watch it fail, implement minimally, watch it pass, commit. `npx jest` runs the suite; `npx tsc --noEmit` typechecks.
 - **The plan file lives under `docs/`, which is git-ignored globally — stage it and every spec with `git add -f`.** Source and test files under `src/`/`tests/` add normally.
+- **Branch & PR (decided 2026-07-13):** all work happens on a NEW branch cut from `feat/multilingual-per-section-embeddings` (e.g. `fix/dimension-mismatch-resilience`). When done, open a PR whose **base is `feat/multilingual-per-section-embeddings`** — not `main`. Do not commit directly to the PR #1 branch.
 
 ---
 
@@ -28,7 +29,7 @@
 - `src/search.ts` — dimension floor in `scoreEntry` (Task 2); model-identity partition + disk-path skip log in `search()`, plus `diskPath` on loaded rows (Task 3).
 - `src/journal.ts` — extract a throwing regen path; rework `generateMissingEmbeddings` (Task 4).
 - `tests/embeddings.test.ts` — `isCompatible` unit test (Task 1); migration hardening tests (Task 4).
-- `tests/search.test.ts` — floor test (Task 2); ceiling/skip-log tests + fix the two existing tests the ceiling changes (Task 3).
+- `tests/search.test.ts` — floor test (Task 2); ceiling/skip-log/`listRecent` tests + fix the two existing tests the ceiling changes (Task 3).
 
 ---
 
@@ -110,11 +111,16 @@ This task fixes the literal reported crash without the model ceiling yet. It onl
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/search.test.ts`. Add `EmbeddingService` to the import at the top (`import { SearchService } from '../src/search';` → also import `EmbeddingService`). New describe:
+Add to `tests/search.test.ts`. Extend the existing embeddings import at the top of the file (line 8) so it also brings in the service — `EmbeddingService` lives in `src/embeddings` and is NOT re-exported by `src/search`:
 
 ```typescript
-import { EmbeddingService } from '../src/embeddings';
+// line 8 becomes:
+import { EMBEDDING_SCHEMA_VERSION, EmbeddingService } from '../src/embeddings';
+```
 
+New describe:
+
+```typescript
 describe('dimension floor (crash safety)', () => {
   let dir: string;
   const model = EmbeddingService.getInstance().getModelName();
@@ -244,7 +250,7 @@ In `tests/search.test.ts`:
   });
 ```
 
-(c) Add ceiling + skip-log tests as a new describe:
+(c) Add ceiling + skip-log tests, plus the `listRecent` provenance-blindness pin required by the spec, as a new describe:
 
 ```typescript
 describe('model-identity ceiling', () => {
@@ -288,13 +294,25 @@ describe('model-identity ceiling', () => {
       expect.stringContaining('skipped'),
     );
   });
+
+  test('listRecent still lists foreign/v1 entries (browse is provenance-blind)', async () => {
+    // Spec: the ceiling filters RANKING only; chronological browsing must
+    // keep showing entries whose vectors are foreign.
+    await writeEntry('native', model);
+    await writeEntry('foreign', 'some-other-model');
+
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    const recent = await svc.listRecent({ type: 'project' });
+
+    expect(recent).toHaveLength(2);
+  });
 });
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npx jest tests/search.test.ts`
-Expected: FAIL — foreign entries still score (no ceiling), no skip log emitted, `foreign.embedding` never logged.
+Expected: FAIL — foreign entries still score (no ceiling), no skip log emitted, `foreign.embedding` never logged. Exception: the `listRecent` pin passes immediately — it guards deliberately-unchanged behavior (the ceiling must not leak into chronological browsing), so it is green before and after.
 
 - [ ] **Step 3: Attach `diskPath` at load**
 
@@ -375,15 +393,15 @@ git commit -m "fix(search): model-identity ceiling + disk-path skip log; skip fo
 ## Task 4: Harden the startup migration scan
 
 **Files:**
-- Modify: `src/journal.ts` — extract a throwing regen path from `generateEmbeddingForEntry` (`:151-187`); rework `generateMissingEmbeddings` (`:189-238`)
+- Modify: `src/journal.ts` — extract a throwing regen path from `generateEmbeddingForEntry` (`:151-187`); rework `generateMissingEmbeddings` (`:189-241`)
 - Test: `tests/embeddings.test.ts`
 
 **Interfaces:**
 - Consumes: `EmbeddingService.isCompatible` (Task 1); `EmbeddingService.initialize()` (`:54`); `initTimeoutMs` (`:35`).
 - Produces:
-  - `private async regenerateEmbedding(filePath, content, timestamp): Promise<boolean>` — throws on real failure, returns `false` when nothing was written (empty text), `true` when an `.embedding` was saved.
+  - `private async regenerateEmbedding(filePath, content, timestamp): Promise<boolean>` — throws on real failure, returns `false` when nothing was written (empty text — in that case any stale `.embedding` orphan is deleted: unrecoverable state, decided 2026-07-13), `true` when an `.embedding` was saved.
   - `generateEmbeddingForEntry` keeps its `Promise<void>` swallowing contract (delegates to `regenerateEmbedding`).
-  - `generateMissingEmbeddings(): Promise<number>` — count reflects only real writes; per-file failures are isolated; a failed model init aborts by returning the partial count (no throw).
+  - `generateMissingEmbeddings(): Promise<number>` — count reflects only real writes; per-file failures are isolated; a failed model init aborts by returning the partial count (no throw); a structurally-corrupt vector (whole-entry **or** per-section `null`/non-array) counts as stale and triggers regen.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -431,17 +449,22 @@ Add to `tests/embeddings.test.ts` (imports `fs`, `path`, `os`, `pipeline`, `Embe
       await writeStale('good', 'good body');
 
       const realReadFile = jest.requireActual('fs/promises').readFile;
-      jest.spyOn(fs, 'readFile').mockImplementation(((p: any, ...a: any[]) =>
+      const readSpy = jest.spyOn(fs, 'readFile').mockImplementation(((p: any, ...a: any[]) =>
         String(p) === boomMd
           ? Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
           : realReadFile(p, ...a)) as any);
 
-      const count = await journalManager.generateMissingEmbeddings();
-
-      expect(count).toBe(1); // 'good' migrated despite 'boom.md' being unreadable
+      try {
+        const count = await journalManager.generateMissingEmbeddings();
+        expect(count).toBe(1); // 'good' migrated despite 'boom.md' being unreadable
+      } finally {
+        // jest.config.cjs sets no restoreMocks — restore by hand or the spy
+        // leaks into every later test in this file.
+        readSpy.mockRestore();
+      }
     });
 
-    test('empty-text entry is not counted and writes no .embedding', async () => {
+    test('empty-text entry is not counted, writes no .embedding, and its stale orphan is deleted', async () => {
       const day = path.join(projectTempDir, '2026-07-08');
       await fs.mkdir(day, { recursive: true });
       await fs.writeFile(path.join(day, 'empty.md'), '   \n', 'utf8'); // no sections, blank body
@@ -451,9 +474,50 @@ Add to `tests/embeddings.test.ts` (imports `fs`, `path`, `os`, `pipeline`, `Embe
       const count = await journalManager.generateMissingEmbeddings();
 
       expect(count).toBe(0);
+      // Regen can never rewrite an .embedding for an empty source, so a stale
+      // one would be re-flagged and search-skip-logged forever. The scan
+      // deletes the orphan (unrecoverable state — decided 2026-07-13).
+      await expect(fs.access(path.join(day, 'empty.embedding')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    test('current-model file with a corrupt vector (whole-entry or section) is regenerated', async () => {
+      const writeCorrupt = async (name: string, vectors: { embedding: unknown; sectionEmbeddings: unknown }) => {
+        const day = path.join(projectTempDir, '2026-07-08');
+        await fs.mkdir(day, { recursive: true });
+        const mdPath = path.join(day, `${name}.md`);
+        await fs.writeFile(mdPath, `## X\n\n${name} body`, 'utf8');
+        await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
+          version: 2, model: EmbeddingService.getInstance().getModelName(),
+          text: 'x', sections: ['X'], timestamp: Date.now(), path: mdPath,
+          ...vectors,
+        }), 'utf8');
+      };
+      await writeCorrupt('corrupt-whole', {
+        embedding: null, // structurally corrupt whole-entry vector
+        sectionEmbeddings: [{ section: 'X', text: 'x', embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }],
+      });
+      await writeCorrupt('corrupt-section', {
+        embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
+        sectionEmbeddings: [{ section: 'X', text: 'x', embedding: null }], // corrupt section vector
+      });
+
+      const count = await journalManager.generateMissingEmbeddings();
+
+      expect(count).toBe(2); // both healed, honestly counted
+      for (const name of ['corrupt-whole', 'corrupt-section']) {
+        const healed = JSON.parse(await fs.readFile(
+          path.join(projectTempDir, '2026-07-08', `${name}.embedding`), 'utf8'));
+        expect(Array.isArray(healed.embedding)).toBe(true);
+        expect(healed.sectionEmbeddings.every((se: any) => Array.isArray(se.embedding))).toBe(true);
+      }
     });
 
     test('model init failure aborts with one scan-level log, no per-file spam, partial count', async () => {
+      // Relies on the OUTER beforeEach recreating journalManager per test:
+      // after the previous test's resetInstance(), it captures a fresh,
+      // UNinitialized singleton. Converting that beforeEach to beforeAll
+      // breaks this test (the captured instance would already be initialized).
       await writeStale('a', 'a body');
       await writeStale('b', 'b body');
 
@@ -479,7 +543,7 @@ Add to `tests/embeddings.test.ts` (imports `fs`, `path`, `os`, `pipeline`, `Embe
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npx jest tests/embeddings.test.ts -t "generateMissingEmbeddings hardening"`
-Expected: FAIL. Under current code: the "one entry failing" test gets `count` = 2 (the swallow lets `count++` fire for `boom`); the unreadable-`.md` test rejects the whole scan (per-`basePath` abort); the empty-text test gets `count` = 1; the init-failure test emits no `aborting re-index` line.
+Expected: FAIL. Under current code: the "one entry failing" test gets `count` = 2 (the swallow lets `count++` fire for `boom`); the unreadable-`.md` test aborts the rest of that journal's scan at the per-`basePath` catch, so `count` = 0; the empty-text test gets `count` = 1 and the stale `.embedding` survives; the corrupt-vector test gets `count` = 0 (version+model match, so the current scan never re-inspects the vectors); the init-failure test emits no `aborting re-index` line.
 
 - [ ] **Step 3: Extract the throwing regen path**
 
@@ -494,6 +558,10 @@ In `src/journal.ts`, replace `generateEmbeddingForEntry` (`:151-187`) with a thr
     const { text, sections, sectionChunks } = this.embeddingService.extractSearchableText(content);
 
     if (text.trim().length === 0) {
+      // Regen can never rewrite an .embedding for an empty source, so a stale
+      // one would stay foreign forever (re-flagged by every scan, named by the
+      // search skip log). Unrecoverable: delete the orphan (no-op when absent).
+      await fs.rm(filePath.replace(/\.md$/, '.embedding'), { force: true });
       return false; // nothing to embed; not a success, not an error
     }
 
@@ -538,7 +606,7 @@ In `src/journal.ts`, replace `generateEmbeddingForEntry` (`:151-187`) with a thr
 
 - [ ] **Step 4: Rework the scan**
 
-Replace the body of `generateMissingEmbeddings` (`:189-238`, everything from `let count = 0;` through the final `}` of the method's loops, i.e. up to and including `:238`) with:
+Replace the **entire body** of `generateMissingEmbeddings` — everything between the method signature (`:189`) and its closing brace (`:241`), i.e. from `let count = 0;` (`:190`) through the existing `return count;` (`:240`) **inclusive** — with the block below. The block ends with its own `return count;`; leaving the old one behind would create unreachable code that neither `tsc` nor this repo's ESLint config flags.
 
 ```typescript
     let count = 0;
@@ -569,8 +637,13 @@ Replace the body of `generateMissingEmbeddings` (`:189-238`, everything from `le
               try {
                 const raw = await fs.readFile(embeddingPath, 'utf8');
                 const existing = JSON.parse(raw);
-                if (!this.embeddingService.isCompatible(existing) ||
-                    !Array.isArray(existing.embedding)) {
+                // Structural check covers the whole-entry vector AND every
+                // section vector; a same-model wrong-length vector is not
+                // detectable here (needs the model's dimension) — accepted.
+                const vectorsOk = Array.isArray(existing.embedding) &&
+                  Array.isArray(existing.sectionEmbeddings) &&
+                  existing.sectionEmbeddings.every((se) => Array.isArray(se?.embedding));
+                if (!this.embeddingService.isCompatible(existing) || !vectorsOk) {
                   needsRegen = true;
                 }
               } catch {
@@ -622,7 +695,7 @@ Replace the body of `generateMissingEmbeddings` (`:189-238`, everything from `le
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `npx jest tests/embeddings.test.ts -t "generateMissingEmbeddings hardening"`
-Expected: PASS (all four).
+Expected: PASS (all five).
 
 - [ ] **Step 6: Guard the existing migration test still asserts its log**
 
@@ -648,3 +721,4 @@ git commit -m "fix(journal): observable throwing regen, truthful count, per-file
 - [ ] `npx tsc --noEmit` — clean.
 - [ ] `npm run lint` — clean.
 - [ ] Manual sanity per the `verify` skill: point a dev MCP at a journal copy, set `PRIVATE_JOURNAL_EMBED_MODEL` to a different-dimension model (e.g. an e5-base), do a partial/interrupted start, then run a search — confirm it returns the still-current entries with a single skip log naming a real path, instead of crashing.
+- [ ] Open the PR: head = this work branch, base = `feat/multilingual-per-section-embeddings` (decided 2026-07-13; follow superpowers:finishing-a-development-branch).
