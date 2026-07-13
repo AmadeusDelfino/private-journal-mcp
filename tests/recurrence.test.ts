@@ -122,8 +122,12 @@ describe('findRecurringThemes - medoid behavior', () => {
     chunk({ vector: v(deg), entryPath: `/j/2026-07-01/e${i}.md`, timestamp: i, text });
 
   test('chained neighbours do not merge (medoid, not single-linkage)', () => {
-    // A~B (20°) and B~C (20°) but A vs C is 40° (cos 0.766 < 0.9): C must not
-    // ride the chain into A's cluster.
+    // A~B (20°) and B~C (20°) but A vs C is 40° (cos 0.766 < 0.9). With the
+    // leader A, the gathered ball is {A,B}; the medoid election ties A and B
+    // (equal means) and strict `>` keeps the earliest — A — so the re-gather
+    // stays anchored at A and C stays out. This pins the tie-break; the
+    // general anti-chaining invariant (membership is one hop from the medoid,
+    // never transitive) is pinned by the bridge test below.
     const chunks = [at(0, 1, 'A'), at(20, 2, 'B'), at(40, 3, 'C')];
     const { themes, stats } = findRecurringThemes(chunks, opts({ minEntries: 2, minDays: 1 }));
 
@@ -132,6 +136,26 @@ describe('findRecurringThemes - medoid behavior', () => {
     const excerpts = [themes[0].representativeExcerpt, ...themes[0].supportingExcerpts];
     expect(excerpts).not.toContain('C');
     expect(stats.clustersFormed).toBe(1);
+  });
+
+  test('a bridge member within τ of the medoid joins, but nothing chains beyond the medoid radius', () => {
+    // Spec model: cluster membership is "within τ of the MEDOID" (one hop from
+    // the center), never transitive. Leader A gathers {A,B,N}; the medoid
+    // re-centers on B. C sits outside A's ball but within τ of B (Δ20°), so it
+    // joins — bounded medoid-radius growth. D is within τ of C (Δ20°) —
+    // single-linkage would chain D in via C — but D is outside τ of the medoid
+    // B (Δ40°), so it stays out.
+    const chunks = [at(0, 1, 'A'), at(20, 2, 'B'), at(22, 3, 'N'), at(40, 4, 'C'), at(60, 5, 'D')];
+    const { themes, stats } = findRecurringThemes(chunks, opts({ minEntries: 2, minDays: 1 }));
+
+    expect(themes).toHaveLength(1);
+    expect(themes[0].representativeExcerpt).toBe('B'); // medoid re-centers off the leader
+    expect(themes[0].occurrences).toBe(4); // A, B, N, C — not D
+    // A and C are equidistant from B; their relative order is float noise.
+    expect(themes[0].supportingExcerpts).toHaveLength(3);
+    expect(themes[0].supportingExcerpts[0]).toBe('N'); // nearest neighbour first
+    expect([...themes[0].supportingExcerpts].sort()).toEqual(['A', 'C', 'N']);
+    expect(stats.clustersFormed).toBe(1); // D ends as an uncounted singleton
   });
 
   test('the most central member is elected medoid', () => {
@@ -222,6 +246,16 @@ describe('findRecurringThemes - ranking and limit', () => {
 
     expect(themes).toHaveLength(2);
     expect(themes[0].representativeExcerpt).toBe('tight0');
+  });
+
+  test('full ties (distinct entries and cohesion) rank the earlier cluster first', () => {
+    const first = entryChunks(2, [0, 0, 1], 'first', 1);
+    const second = entryChunks(2, [0, 1, 0], 'second', 10);
+    const { themes } = findRecurringThemes([...first, ...second], opts({ minEntries: 2, minDays: 1 }));
+
+    expect(themes).toHaveLength(2);
+    expect(themes[0].representativeExcerpt).toBe('first0');
+    expect(themes[1].representativeExcerpt).toBe('second0');
   });
 
   test('a theme mixing project and user entries reports type both', () => {
