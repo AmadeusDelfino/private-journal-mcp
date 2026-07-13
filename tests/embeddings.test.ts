@@ -552,6 +552,8 @@ beta insight body`;
       const count = await journalManager.generateMissingEmbeddings();
 
       expect(count).toBe(1); // only 'good' migrated
+      const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+      expect(errorCalls.filter(m => m.startsWith('Failed to migrate'))).toHaveLength(1);
       const goodEmb = JSON.parse(await fs.readFile(
         path.join(projectTempDir, '2026-07-08', 'good.embedding'), 'utf8'));
       expect(goodEmb.version).toBe(2);
@@ -578,6 +580,8 @@ beta insight body`;
       try {
         const count = await journalManager.generateMissingEmbeddings();
         expect(count).toBe(1); // 'good' migrated despite 'boom.md' being unreadable
+        const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+        expect(errorCalls.filter(m => m.startsWith('Failed to migrate'))).toHaveLength(1);
       } finally {
         // jest.config.cjs sets no restoreMocks — restore by hand or the spy
         // leaks into every later test in this file.
@@ -595,6 +599,8 @@ beta insight body`;
       const count = await journalManager.generateMissingEmbeddings();
 
       expect(count).toBe(0);
+      const errorCalls = jest.mocked(console.error).mock.calls.map(c => String(c[0]));
+      expect(errorCalls.filter(m => m.startsWith('Failed to migrate'))).toHaveLength(0); // empty source is not an error
       // Regen can never rewrite an .embedding for an empty source, so a stale
       // one would be re-flagged and search-skip-logged forever. The scan
       // deletes the orphan (unrecoverable state — decided 2026-07-13).
@@ -609,7 +615,7 @@ beta insight body`;
         const mdPath = path.join(day, `${name}.md`);
         await fs.writeFile(mdPath, `## X\n\n${name} body`, 'utf8');
         await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
-          version: 2, model: EmbeddingService.getInstance().getModelName(),
+          version: EMBEDDING_SCHEMA_VERSION, model: EmbeddingService.getInstance().getModelName(),
           text: 'x', sections: ['X'], timestamp: Date.now(), path: mdPath,
           ...vectors,
         }), 'utf8');
