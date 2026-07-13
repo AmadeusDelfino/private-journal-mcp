@@ -9,13 +9,14 @@ import { EMBEDDING_SCHEMA_VERSION, EmbeddingService } from '../src/embeddings';
 
 describe('max-over-sections ranking', () => {
   let projectDir: string;
+  const model = EmbeddingService.getInstance().getModelName();
 
   const writeEmbedding = async (name: string, sectionEmbeddings: any[]) => {
     const day = path.join(projectDir, '2026-07-08');
     await fs.mkdir(day, { recursive: true });
     await fs.writeFile(path.join(day, `${name}.md`), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
-      version: EMBEDDING_SCHEMA_VERSION, model: 'test',
+      version: EMBEDDING_SCHEMA_VERSION, model,
       embedding: [0, 0, 1], sectionEmbeddings,
       text: 'body', sections: sectionEmbeddings.map(s => s.section),
       timestamp: Date.now(), path: path.join(day, `${name}.md`),
@@ -44,24 +45,24 @@ describe('max-over-sections ranking', () => {
     expect(results[0].score).toBeGreaterThan(results[1].score);
   });
 
-  test('legacy v1 entry (no sectionEmbeddings) scored via whole-entry vector', async () => {
+  test('legacy v1 entry (no version/model) is skipped from ranking', async () => {
+    // Rationale: decision (ii) in the design spec. v1 is foreign by provenance;
+    // the startup scan converts v1 -> v2. Replaces the aa585a2 fallback assertion.
     const day = path.join(projectDir, '2026-07-08');
     await fs.mkdir(day, { recursive: true });
     await fs.writeFile(path.join(day, 'legacy.md'), '## X\n\nbody', 'utf8');
     await fs.writeFile(path.join(day, 'legacy.embedding'), JSON.stringify({
-      // v1 format: no version, no model, no sectionEmbeddings
-      embedding: [0.1, 0.2, 0.3, 0.4, 0.5], // parallel to query → cos ~1
-      text: 'body', sections: ['X'],
+      embedding: [0.1, 0.2, 0.3, 0.4, 0.5], text: 'body', sections: ['X'],
       timestamp: Date.now(), path: path.join(day, 'legacy.md'),
     }), 'utf8');
 
     const svc = new SearchService(projectDir, path.join(projectDir, 'no-user'));
     const results = await svc.search('anything', { type: 'project', minScore: -1 });
 
-    expect(results).toHaveLength(1);
-    expect(results[0].path).toContain('legacy.md');
-    expect(results[0].score).toBeCloseTo(1, 5);
-    expect(results[0].matchedSection).toBeUndefined();
+    expect(results).toHaveLength(0);
+    expect(jest.mocked(console.error)).toHaveBeenCalledWith(
+      expect.stringContaining('skipped 1'),
+    );
   });
 });
 
@@ -134,5 +135,60 @@ describe('dimension floor (crash safety)', () => {
 
     const svc = new SearchService(dir, path.join(dir, 'no-user'));
     await expect(svc.search('anything', { type: 'project', minScore: -1 })).resolves.toEqual([]);
+  });
+});
+
+describe('model-identity ceiling', () => {
+  let dir: string;
+  const model = EmbeddingService.getInstance().getModelName();
+
+  const writeEntry = async (name: string, entryModel: string) => {
+    const day = path.join(dir, '2026-07-08');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(path.join(day, `${name}.md`), '## X\n\nbody', 'utf8');
+    await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
+      version: 2, model: entryModel,
+      embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
+      sectionEmbeddings: [{ section: 'A', text: 'a', embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }],
+      text: 'body', sections: ['A'], timestamp: Date.now(), path: path.join(day, `${name}.md`),
+    }), 'utf8');
+  };
+
+  beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ceiling-test-')); });
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
+
+  test('same-dimension foreign-model entry is excluded from ranking and logged with its on-disk path', async () => {
+    await writeEntry('native', model);
+    await writeEntry('foreign', 'some-other-model'); // same 5-dim, different model
+
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    const results = await svc.search('anything', { type: 'project', minScore: -1 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].path).toContain('native.md');
+    expect(jest.mocked(console.error)).toHaveBeenCalledWith(
+      expect.stringContaining('foreign.embedding'), // on-disk path, not the stored path
+    );
+  });
+
+  test('no skip log when everything is current-model', async () => {
+    await writeEntry('native', model);
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    await svc.search('anything', { type: 'project', minScore: -1 });
+    expect(jest.mocked(console.error)).not.toHaveBeenCalledWith(
+      expect.stringContaining('skipped'),
+    );
+  });
+
+  test('listRecent still lists foreign/v1 entries (browse is provenance-blind)', async () => {
+    // Spec: the ceiling filters RANKING only; chronological browsing must
+    // keep showing entries whose vectors are foreign.
+    await writeEntry('native', model);
+    await writeEntry('foreign', 'some-other-model');
+
+    const svc = new SearchService(dir, path.join(dir, 'no-user'));
+    const recent = await svc.listRecent({ type: 'project' });
+
+    expect(recent).toHaveLength(2);
   });
 });

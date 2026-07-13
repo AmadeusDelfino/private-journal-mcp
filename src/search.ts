@@ -6,6 +6,8 @@ import * as path from 'path';
 import { EmbeddingService, EmbeddingData } from './embeddings.js';
 import { resolveUserJournalPath, resolveProjectJournalPath } from './paths.js';
 
+type LoadedEmbedding = EmbeddingData & { type: 'project' | 'user'; diskPath: string };
+
 export interface SearchResult {
   path: string;
   score: number;
@@ -60,7 +62,7 @@ export class SearchService {
     const queryEmbedding = await this.embeddingService.generateEmbedding(query, 'query');
 
     // Collect all embeddings
-    const allEmbeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
+    const allEmbeddings: LoadedEmbedding[] = [];
 
     if (type === 'both' || type === 'project') {
       const projectEmbeddings = await this.loadEmbeddingsFromPath(this.projectPath, 'project');
@@ -94,12 +96,25 @@ export class SearchService {
       return true;
     });
 
-    // Calculate similarities and sort
-    const results: SearchResult[] = filtered
+    // Only score entries we can attest came from the current model. Foreign /
+    // v1 rows are skipped (read-only: healing is the migration's job) and
+    // surfaced once, naming their on-disk paths.
+    const scorable = filtered.filter(e => this.embeddingService.isCompatible(e));
+    const foreign = filtered.filter(e => !this.embeddingService.isCompatible(e));
+
+    if (foreign.length > 0) {
+      const sample = foreign.slice(0, 3).map(e => e.diskPath).join(', ');
+      console.error(
+        `search_journal: skipped ${foreign.length} ` +
+        `entr${foreign.length === 1 ? 'y' : 'ies'} (incompatible embedding model); ` +
+        `run a re-index. Examples: ${sample}`
+      );
+    }
+
+    const results: SearchResult[] = scorable
       .map(embedding => {
         const { score, matchedSection } = this.scoreEntry(queryEmbedding, embedding);
         const excerpt = this.generateExcerpt(embedding.text, query);
-        
         return {
           path: embedding.path,
           score,
@@ -267,10 +282,10 @@ export class SearchService {
   }
 
   private async loadEmbeddingsFromPath(
-    basePath: string, 
+    basePath: string,
     type: 'project' | 'user'
-  ): Promise<Array<EmbeddingData & { type: 'project' | 'user' }>> {
-    const embeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
+  ): Promise<LoadedEmbedding[]> {
+    const embeddings: LoadedEmbedding[] = [];
 
     try {
       const dayDirs = await fs.readdir(basePath);
@@ -291,7 +306,7 @@ export class SearchService {
             const embeddingPath = path.join(dayPath, embeddingFile);
             const content = await fs.readFile(embeddingPath, 'utf8');
             const embeddingData = JSON.parse(content);
-            embeddings.push({ ...embeddingData, type });
+            embeddings.push({ ...embeddingData, type, diskPath: embeddingPath });
           } catch (error) {
             console.error(`Failed to load embedding ${embeddingFile}:`, error);
             // Continue with other files
