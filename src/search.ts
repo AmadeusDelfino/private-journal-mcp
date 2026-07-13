@@ -140,7 +140,7 @@ export class SearchService {
     const dimOk = (v: unknown): v is number[] =>
       Array.isArray(v) && v.length === queryEmbedding.length;
 
-    if (entry.sectionEmbeddings && entry.sectionEmbeddings.length > 0) {
+    if (Array.isArray(entry.sectionEmbeddings) && entry.sectionEmbeddings.length > 0) {
       let best = -Infinity;
       let matchedSection: string | undefined;
       for (const se of entry.sectionEmbeddings) {
