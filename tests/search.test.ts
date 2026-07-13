@@ -217,3 +217,106 @@ describe('model-identity ceiling', () => {
     expect(recent).toHaveLength(2);
   });
 });
+
+describe('coincident project/user roots (deduplication)', () => {
+  let dir: string;
+  const model = EmbeddingService.getInstance().getModelName();
+
+  const writeEntryIn = async (base: string, name: string, timestamp: number = Date.now()) => {
+    const day = path.join(base, '2026-07-08');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(path.join(day, `${name}.md`), '## X\n\nbody', 'utf8');
+    await fs.writeFile(path.join(day, `${name}.embedding`), JSON.stringify({
+      version: EMBEDDING_SCHEMA_VERSION, model,
+      embedding: [0.1, 0.2, 0.3, 0.4, 0.5],
+      sectionEmbeddings: [{ section: 'A', text: 'a', embedding: [0.1, 0.2, 0.3, 0.4, 0.5] }],
+      text: 'body', sections: ['A'], timestamp, path: path.join(day, `${name}.md`),
+    }), 'utf8');
+  };
+  const writeEntry = (name: string, timestamp?: number) => writeEntryIn(dir, name, timestamp);
+
+  let originalEnv: NodeJS.ProcessEnv;
+  beforeEach(async () => {
+    originalEnv = { ...process.env };
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dedup-test-'));
+  });
+  afterEach(async () => {
+    process.env = originalEnv;
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  test('search type=both returns each entry once, labeled user, when roots coincide', async () => {
+    await writeEntry('e1');
+    await writeEntry('e2');
+
+    // Same physical dir backs both roots (mirrors PRIVATE_JOURNAL_PATH being set).
+    const svc = new SearchService(dir, dir);
+    const results = await svc.search('anything', { type: 'both', minScore: -1 });
+
+    expect(results).toHaveLength(2); // not 4 — no duplicates
+    expect(new Set(results.map(r => r.path)).size).toBe(2);
+    expect(results.every(r => r.type === 'user')).toBe(true);
+  });
+
+  test('single-arg construction under PRIVATE_JOURNAL_PATH dedups (real server path)', async () => {
+    // server.ts builds `new SearchService(journalPath)` with one arg; userPath
+    // falls back to resolveUserJournalPath(), which returns PRIVATE_JOURNAL_PATH —
+    // the same directory. This is the exact chain that produced the reported bug.
+    process.env.PRIVATE_JOURNAL_PATH = dir;
+    await writeEntry('e1');
+    await writeEntry('e2');
+
+    const svc = new SearchService(dir); // one arg, mirroring the server
+    const results = await svc.search('anything', { type: 'both', minScore: -1 });
+
+    expect(results).toHaveLength(2);
+    expect(new Set(results.map(r => r.path)).size).toBe(2);
+  });
+
+  test('listRecent type=both returns each entry once when roots coincide', async () => {
+    await writeEntry('e1');
+    await writeEntry('e2');
+
+    const svc = new SearchService(dir, dir);
+    const recent = await svc.listRecent({ type: 'both' });
+
+    expect(recent).toHaveLength(2); // not 4
+    expect(new Set(recent.map(r => r.path)).size).toBe(2);
+  });
+
+  test('listRecent limit counts distinct entries, not duplicates, when roots coincide', async () => {
+    // Distinct, ordered timestamps so slicing is deterministic.
+    await writeEntry('e1', 1000);
+    await writeEntry('e2', 2000);
+    await writeEntry('e3', 3000);
+    await writeEntry('e4', 4000);
+
+    const svc = new SearchService(dir, dir);
+    const recent = await svc.listRecent({ type: 'both', limit: 4 });
+
+    // Without dedup the 4 slots are filled by 2 entries (each duplicated), so the
+    // effective limit is halved. With the fix all 4 distinct entries are returned.
+    expect(new Set(recent.map(r => r.path)).size).toBe(4);
+  });
+
+  test('distinct roots still return both project and user entries with correct labels', async () => {
+    // Regression guard: the single-scan branch must not affect the normal case
+    // where the two roots are different directories.
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dedup-proj-'));
+    const userDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dedup-user-'));
+    try {
+      await writeEntryIn(projectDir, 'p1');
+      await writeEntryIn(userDir, 'u1');
+
+      const svc = new SearchService(projectDir, userDir);
+      const results = await svc.search('anything', { type: 'both', minScore: -1 });
+
+      expect(results).toHaveLength(2);
+      expect(results.find(r => r.path.includes('p1'))?.type).toBe('project');
+      expect(results.find(r => r.path.includes('u1'))?.type).toBe('user');
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+      await fs.rm(userDir, { recursive: true, force: true });
+    }
+  });
+});

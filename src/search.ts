@@ -62,17 +62,7 @@ export class SearchService {
     const queryEmbedding = await this.embeddingService.generateEmbedding(query, 'query');
 
     // Collect all embeddings
-    const allEmbeddings: LoadedEmbedding[] = [];
-
-    if (type === 'both' || type === 'project') {
-      const projectEmbeddings = await this.loadEmbeddingsFromPath(this.projectPath, 'project');
-      allEmbeddings.push(...projectEmbeddings);
-    }
-
-    if (type === 'both' || type === 'user') {
-      const userEmbeddings = await this.loadEmbeddingsFromPath(this.userPath, 'user');
-      allEmbeddings.push(...userEmbeddings);
-    }
+    const allEmbeddings = await this.collectEmbeddings(type);
 
     // Filter by criteria
     const filtered = allEmbeddings.filter(embedding => {
@@ -162,17 +152,7 @@ export class SearchService {
       dateRange
     } = options;
 
-    const allEmbeddings: Array<EmbeddingData & { type: 'project' | 'user' }> = [];
-
-    if (type === 'both' || type === 'project') {
-      const projectEmbeddings = await this.loadEmbeddingsFromPath(this.projectPath, 'project');
-      allEmbeddings.push(...projectEmbeddings);
-    }
-
-    if (type === 'both' || type === 'user') {
-      const userEmbeddings = await this.loadEmbeddingsFromPath(this.userPath, 'user');
-      allEmbeddings.push(...userEmbeddings);
-    }
+    const allEmbeddings = await this.collectEmbeddings(type);
 
     // Filter by date range
     const filtered = dateRange ? allEmbeddings.filter(embedding => {
@@ -279,6 +259,30 @@ export class SearchService {
     return roots.some(
       root => candidate === root || candidate.startsWith(root + path.sep)
     );
+  }
+
+  // Collect embeddings honoring the type filter. When both journal roots resolve
+  // to the same physical directory (e.g. PRIVATE_JOURNAL_PATH is set, or CWD ===
+  // HOME), scanning both would return every entry twice — halving the effective
+  // limit and surfacing each hit side by side. In that case scan once, labeling
+  // by the requested type (both/user -> 'user', since PRIVATE_JOURNAL_PATH is the
+  // personal journal).
+  private async collectEmbeddings(
+    type: 'project' | 'user' | 'both'
+  ): Promise<LoadedEmbedding[]> {
+    if (path.resolve(this.projectPath) === path.resolve(this.userPath)) {
+      const label = type === 'project' ? 'project' : 'user';
+      return this.loadEmbeddingsFromPath(this.projectPath, label);
+    }
+
+    const embeddings: LoadedEmbedding[] = [];
+    if (type === 'both' || type === 'project') {
+      embeddings.push(...await this.loadEmbeddingsFromPath(this.projectPath, 'project'));
+    }
+    if (type === 'both' || type === 'user') {
+      embeddings.push(...await this.loadEmbeddingsFromPath(this.userPath, 'user'));
+    }
+    return embeddings;
   }
 
   private async loadEmbeddingsFromPath(
